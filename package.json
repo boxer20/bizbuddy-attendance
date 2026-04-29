@@ -1,0 +1,14 @@
+{
+  "name": "local-attendance-mvp",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local network MVP for attendance and leave management",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "check": "node --check server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
