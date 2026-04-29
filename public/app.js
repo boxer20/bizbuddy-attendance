@@ -23,6 +23,16 @@
     APPROVED: "\uc2b9\uc778",
     REJECTED: "\ubc18\ub824",
     CANCELED: "\ucde8\uc18c"
+  },
+  overtimeDayType: {
+    WEEKDAY: "\ud3c9\uc77c",
+    HOLIDAY: "\ud734\uc77c"
+  },
+  overtimeStatus: {
+    RECORDED: "\uae30\ub85d\uc644\ub8cc",
+    PENDING_EXECUTIVE: "\uad00\ub9ac\uc790 \uc2b9\uc778 \ub300\uae30",
+    APPROVED: "\uc2b9\uc778",
+    REJECTED: "\ubc18\ub824"
   }
 };
 
@@ -37,6 +47,8 @@ const state = {
   leaveBalances: [],
   leaveRequests: [],
   leaveAdjustments: [],
+  overtimeRecords: [],
+  holidays: [],
   allowedIps: [],
   auditLogs: [],
   ipRestrictionEnabled: false,
@@ -65,6 +77,14 @@ const state = {
     to: today(),
     userId: "",
     kind: ""
+  },
+  overtimeViewMode: "table",
+  overtimeCalendarMonth: today().slice(0, 7),
+  overtimeFilters: {
+    from: `${today().slice(0, 7)}-01`,
+    to: today(),
+    userId: "",
+    status: ""
   },
   leaveYear: today().slice(0, 4)
 };
@@ -166,6 +186,15 @@ function timeValue(value) {
     minute: "2-digit",
     hour12: false
   });
+}
+
+function formatMinutes(minutes) {
+  const value = Number(minutes || 0);
+  const hours = Math.floor(value / 60);
+  const remain = value % 60;
+  if (!value) return "0시간";
+  if (!remain) return `${hours}시간`;
+  return `${hours}시간 ${remain}분`;
 }
 
 function teamName(teamId) {
@@ -288,6 +317,54 @@ function filteredLeaveAdjustments() {
   });
 }
 
+function filteredOvertimeRecords() {
+  return state.overtimeRecords.filter((item) => {
+    if (state.overtimeFilters.userId && item.userId !== state.overtimeFilters.userId) return false;
+    if (state.overtimeFilters.status && item.status !== state.overtimeFilters.status) return false;
+    if (state.overtimeFilters.from && item.date < state.overtimeFilters.from) return false;
+    if (state.overtimeFilters.to && item.date > state.overtimeFilters.to) return false;
+    return true;
+  });
+}
+
+function holidayName(date) {
+  return state.holidays.find((item) => item.date === date)?.name || "";
+}
+
+function isHolidayDateClient(date) {
+  const day = new Date(`${date}T00:00:00`).getDay();
+  return day === 0 || day === 6 || state.holidays.some((item) => item.date === date);
+}
+
+function overtimeDayLabel(date) {
+  return isHolidayDateClient(date) ? "휴일" : "평일";
+}
+
+function attendanceRecordForDate(date, userId = state.me?.id) {
+  return state.attendance.find((item) => item.userId === userId && item.date === date) || null;
+}
+
+function overtimeFormDefaults(date = today()) {
+  const attendanceRecord = attendanceRecordForDate(date);
+  return {
+    date,
+    checkInTime: attendanceRecord?.checkInAt ? timeValue(attendanceRecord.checkInAt) : "",
+    checkOutDate: date
+  };
+}
+
+function overtimeSummary(records) {
+  return records.reduce((acc, item) => {
+    acc.total += 1;
+    acc.actualMinutes += Number(item.actualMinutes || 0);
+    acc.recognizedMinutes += Number(item.recognizedMinutes || 0);
+    acc.pending += item.status === "PENDING_EXECUTIVE" ? 1 : 0;
+    acc.approved += item.status === "APPROVED" ? 1 : 0;
+    acc.requestedDays += Number(item.requestedGrantDays || 0);
+    return acc;
+  }, { total: 0, actualMinutes: 0, recognizedMinutes: 0, pending: 0, approved: 0, requestedDays: 0 });
+}
+
 function menuGroups() {
   const groups = [
     {
@@ -301,6 +378,7 @@ function menuGroups() {
       title: "\uadfc\ud0dc\uad00\ub9ac",
       items: [
         { key: "attendance", label: "\ucd9c\ud1f4\uadfc\uae30\ub85d" },
+        { key: "overtime", label: "\ucd94\uac00\uadfc\ubb34 \uad00\ub9ac" },
         { key: "attendanceRequests", label: "\uc218\uc815\uc694\uccad\ub0b4\uc5ed" }
       ]
     },
@@ -326,6 +404,7 @@ function menuGroups() {
       items: [
         { key: "users", label: "\uc9c1\uc6d0\uad00\ub9ac" },
         { key: "teams", label: "\ud300\uad00\ub9ac" },
+        { key: "holidays", label: "\ud734\uc77c \ub4f1\ub85d\uad00\ub9ac" },
         { key: "settings", label: "\uc124\uc815" },
         { key: "audit", label: "\uac10\uc0ac\ub85c\uadf8" }
       ]
@@ -336,6 +415,13 @@ function menuGroups() {
 }
 
 function appFrame(title, description, content) {
+  const todayRecord = state.attendance.find((item) => item.userId === state.me?.id && item.date === today());
+  const topbarCheckInLabel = todayRecord?.checkInAt
+    ? `\ucd9c\uadfc<br><span class="button-sub">(완료 : ${esc(formatTime(todayRecord.checkInAt))})</span>`
+    : "\ucd9c\uadfc";
+  const topbarCheckOutLabel = todayRecord?.checkOutAt
+    ? `\ud1f4\uadfc<br><span class="button-sub">(완료 : ${esc(formatTime(todayRecord.checkOutAt))})</span>`
+    : "\ud1f4\uadfc";
   return `
     <div class="layout">
       <aside class="sidebar">
@@ -379,6 +465,7 @@ function appFrame(title, description, content) {
             <p>${esc(description)}</p>
           </div>
           <div class="topbar-actions">
+            ${state.me?.role === "EMPLOYEE" ? `<button type="button" data-action="check-in">${topbarCheckInLabel}</button><button class="secondary" type="button" data-action="check-out">${topbarCheckOutLabel}</button>` : ""}
             <button class="secondary" type="button" data-action="open-mypage">\ub9c8\uc774\ud398\uc774\uc9c0</button>
             <button class="secondary" type="button" data-action="refresh">\uc0c8\ub85c\uace0\uce68</button>
             <button class="ghost" type="button" data-action="logout">\ub85c\uadf8\uc544\uc6c3</button>
@@ -393,6 +480,10 @@ function appFrame(title, description, content) {
 
 function summaryItem(label, value, extraClass = "") {
   return `<div class="summary-item ${extraClass}"><span>${esc(label)}</span><strong>${value}</strong></div>`;
+}
+
+function summaryButton(label, value, action, extraClass = "") {
+  return `<button class="summary-item clickable ${extraClass}" type="button" data-action="${esc(action)}"><span>${esc(label)}</span><strong>${value}</strong></button>`;
 }
 
 function dashboardPage() {
@@ -419,6 +510,7 @@ function dashboardPage() {
     if (!isExecutive()) return false;
     return item.status === "PENDING_TEAM_LEAD" || item.status === "PENDING_EXECUTIVE";
   });
+  const pendingOvertimeApprovals = state.overtimeRecords.filter((item) => isExecutive() && item.status === "PENDING_EXECUTIVE");
   return appFrame(
     "\ub300\uc2dc\ubcf4\ub4dc",
     "\uc624\ub298 \ud604\ud669\uacfc \uc8fc\uc694 \uc815\ubcf4\ub97c \ud655\uc778\ud569\ub2c8\ub2e4.",
@@ -442,22 +534,18 @@ function dashboardPage() {
           ${summaryItem("\ud734\uac00 \ucd1d\uc0ac\uc6a9", isExecutive() ? `${orgLeaveNumbers.used}\uc77c` : (myNumbers ? `${myNumbers.used}\uc77c` : "-"))}
           ${summaryItem("\ud734\uac00 \uc2b9\uc778 \ub300\uae30", `${pendingLeaveApprovals.length}\uac74`, pendingLeaveApprovals.length ? "danger-value" : "")}
           ${summaryItem("\uadfc\ud0dc \uc2b9\uc778 \ub300\uae30", `${pendingAttendanceApprovals.length}\uac74`, pendingAttendanceApprovals.length ? "danger-value" : "")}
+          ${summaryItem("\ucd94\uac00\uadfc\ubb34 \ub300\uae30", `${pendingOvertimeApprovals.length}\uac74`, pendingOvertimeApprovals.length ? "danger-value" : "")}
         </div>
       </section>
-      ${(pendingLeaveApprovals.length || pendingAttendanceApprovals.length) ? `
+      ${(pendingLeaveApprovals.length || pendingAttendanceApprovals.length || pendingOvertimeApprovals.length) ? `
         <section class="notice warn">
           ${pendingLeaveApprovals.length ? `\ud734\uac00 \uc2b9\uc778 \ub300\uae30 ${pendingLeaveApprovals.length}\uac74` : ""}
           ${pendingLeaveApprovals.length && pendingAttendanceApprovals.length ? " / " : ""}
           ${pendingAttendanceApprovals.length ? `\uadfc\ud0dc \uc2b9\uc778 \ub300\uae30 ${pendingAttendanceApprovals.length}\uac74` : ""}
+          ${(pendingLeaveApprovals.length || pendingAttendanceApprovals.length) && pendingOvertimeApprovals.length ? " / " : ""}
+          ${pendingOvertimeApprovals.length ? `\ucd94\uac00\uadfc\ubb34 \ub300\uae30 ${pendingOvertimeApprovals.length}\uac74` : ""}
         </section>
       ` : ""}
-      <section class="surface">
-        <div class="actions" style="justify-content: space-between;">
-          <h3>${esc(state.leaveYear)}\ub144 \ud734\uac00 \ud604\ud669</h3>
-          ${isExecutive() ? `<button class="secondary" type="button" data-action="switch-tab" data-tab="leave">\uc0c1\uc138\ubcf4\uae30</button>` : `<button type="button" data-action="open-leave-request">\ud734\uac00 \uc2e0\uccad</button>`}
-        </div>
-        ${leaveBalanceTable(isExecutive() ? state.leaveBalances : state.leaveBalances.filter((item) => item.userId === state.me.id))}
-      </section>
       <section class="surface">
           <div class="actions" style="justify-content: space-between;">
             <h3>${isExecutive() ? `${esc(state.leaveYear)}\ub144 \uadfc\ud0dc \ud604\ud669` : "\uc624\ub298 \uadfc\ud0dc"}</h3>
@@ -481,6 +569,13 @@ function dashboardPage() {
               ${attendanceTable(myRecords.slice(0, 5), false)}
             `}
       </section>
+      <section class="surface">
+        <div class="actions" style="justify-content: space-between;">
+          <h3>${esc(state.leaveYear)}\ub144 \ud734\uac00 \ud604\ud669</h3>
+          ${isExecutive() ? `<button class="secondary" type="button" data-action="switch-tab" data-tab="leave">\uc0c1\uc138\ubcf4\uae30</button>` : `<button type="button" data-action="open-leave-request">\ud734\uac00 \uc2e0\uccad</button>`}
+        </div>
+        ${leaveBalanceTable(isExecutive() ? state.leaveBalances : state.leaveBalances.filter((item) => item.userId === state.me.id))}
+      </section>
       <section class="grid two dashboard-grid">
         <div class="surface">
           <h3>\ucd5c\uadfc \ud734\uac00 \ub0b4\uc5ed</h3>
@@ -488,7 +583,7 @@ function dashboardPage() {
         </div>
         <div class="surface">
           <h3>${canDashboardQueueTitle()}</h3>
-          ${dashboardQueueContent(pendingLeaveApprovals, pendingAttendanceApprovals)}
+          ${dashboardQueueContent(pendingLeaveApprovals, pendingAttendanceApprovals, pendingOvertimeApprovals)}
         </div>
       </section>
     `
@@ -569,16 +664,19 @@ function attendanceCalendar() {
         const late = dayRecords.filter((record) => attendanceJudge(record) === "LATE").length;
         const notCheckedOut = dayRecords.filter((record) => record.checkInAt && !record.checkOutAt).length;
         const totalTargets = state.attendanceFilters.userId ? 1 : Math.max(0, state.users.filter((user) => isAttendanceTarget(user)).length);
+        const hasRecords = dayRecords.length > 0;
         return `
           <div class="calendar-day ${day.inMonth ? "" : "is-other-month"} ${day.date === today() ? "is-today" : ""}">
             <header><span>${day.day}</span></header>
             <div class="calendar-body">
-              <button class="calendar-summary-button" type="button" data-action="show-attendance-day" data-date="${esc(day.date)}">
-                <div class="calendar-metric total"><span>\uc804\uccb4\ub300\uc0c1\uc790</span><strong>${totalTargets}\uba85</strong></div>
-                <div class="calendar-metric"><span>\uc815\uc0c1\ucd9c\uadfc</span><strong>${normal}\uac74/${totalTargets}</strong></div>
-                <div class="calendar-metric danger"><span>\uc9c0\uac01</span><strong>${late}\uac74/${totalTargets}</strong></div>
-                <div class="calendar-metric"><span>\ubbf8\ud1f4\uadfc</span><strong>${notCheckedOut}\uac74/${totalTargets}</strong></div>
-              </button>
+              ${hasRecords ? `
+                <button class="calendar-summary-button" type="button" data-action="show-attendance-day" data-date="${esc(day.date)}">
+                  <div class="calendar-metric total"><span>\uc804\uccb4\ub300\uc0c1\uc790</span><strong>${totalTargets}\uba85</strong></div>
+                  <div class="calendar-metric"><span>\uc815\uc0c1\ucd9c\uadfc</span><strong>${normal}\uac74/${totalTargets}</strong></div>
+                  <div class="calendar-metric danger"><span>\uc9c0\uac01</span><strong>${late}\uac74/${totalTargets}</strong></div>
+                  <div class="calendar-metric"><span>\ubbf8\ud1f4\uadfc</span><strong>${notCheckedOut}\uac74/${totalTargets}</strong></div>
+                </button>
+              ` : ""}
             </div>
           </div>
         `;
@@ -709,6 +807,183 @@ function attendanceRequestsPage() {
       <section class="surface">
         <h3>\uc218\uc815\uc694\uccad \ubaa9\ub85d</h3>
         ${attendanceRequestsTable()}
+      </section>
+    `
+  );
+}
+
+function overtimeTable(records, approvals = false, requestActions = false) {
+  if (!records.length) return `<div class="empty">\ucd94\uac00\uadfc\ubb34 \ub0b4\uc5ed\uc774 \uc5c6\uc2b5\ub2c8\ub2e4.</div>`;
+  return `
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>\ub0a0\uc9dc</th>
+            <th>\uad6c\ubd84</th>
+            <th>\uc9c1\uc6d0</th>
+            <th>\ucd9c\uadfc / \ud1f4\uadfc</th>
+            <th>\uc2e4\uadfc\ubb34\uc2dc\uac04</th>
+            <th>\uc778\uc815\uc2dc\uac04</th>
+              <th>\ub300\uccb4\ud734\uac00 \uc694\uccad</th>
+              <th>\uc0c1\ud0dc</th>
+              <th>\ube44\uace0</th>
+              ${requestActions ? "<th>\uc694\uccad</th>" : ""}
+              ${approvals ? "<th>\ucc98\ub9ac</th>" : ""}
+            </tr>
+          </thead>
+          <tbody>
+          ${records.map((item) => `
+            <tr>
+              <td>${esc(item.date)}</td>
+              <td>${esc(T.overtimeDayType[item.dayType] || item.dayType || "-")}</td>
+              <td>${esc(item.user?.name || "-")}</td>
+              <td>${esc(formatTime(item.checkInAt))} / ${esc(formatTime(item.checkOutAt))}${item.checkOutDate && item.checkOutDate !== item.date ? `<div class="muted">\ud1f4\uadfc\uc77c: ${esc(item.checkOutDate)}</div>` : ""}</td>
+              <td>${esc(formatMinutes(item.actualMinutes))}</td>
+              <td>${esc(formatMinutes(item.recognizedMinutes))}</td>
+                <td>${item.requestedGrantDays ? `${esc(item.requestedGrantDays)}\uc77c` : "-"}</td>
+                <td><span class="badge ${badgeClass(item.status)}">${esc(T.overtimeStatus[item.status] || item.status)}</span></td>
+                <td>${renderReasonButton(item.decisionComment || item.reason)}</td>
+                ${requestActions ? `<td>${overtimeRequestButtons(item)}</td>` : ""}
+                ${approvals ? `<td>${overtimeApprovalButtons(item)}</td>` : ""}
+              </tr>
+            `).join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function overtimeApprovalButtons(item) {
+  if (isExecutive() && item.status === "PENDING_EXECUTIVE") {
+    return `<div class="actions"><button type="button" data-action="overtime-approve" data-record-id="${esc(item.id)}">\uc2b9\uc778</button><button class="secondary" type="button" data-action="overtime-reject" data-record-id="${esc(item.id)}">\ubc18\ub824</button></div>`;
+  }
+  return "-";
+}
+
+function overtimeRequestButtons(item) {
+  if (item.userId !== state.me?.id || !isAttendanceTarget(state.me)) return "-";
+  if (item.leaveAdjustmentId || item.status === "APPROVED") return `<span class="badge green">\ubd80\uc5ec\uc644\ub8cc</span>`;
+  const eligible = Number(item.eligibleGrantDays || 0);
+  if (eligible < 0.5) return "-";
+  if (item.status === "PENDING_EXECUTIVE") {
+    return `<div class="actions"><span class="badge amber">${esc(`${item.requestedGrantDays}일 요청중`)}</span><button class="secondary" type="button" data-action="overtime-cancel-grant" data-record-id="${esc(item.id)}">\uc694\uccad\ucde8\uc18c</button></div>`;
+  }
+  const buttons = [];
+  if (eligible >= 0.5) buttons.push(`<button type="button" data-action="overtime-request-grant" data-record-id="${esc(item.id)}" data-days="0.5">\ubc18\ucc28 \uc694\uccad</button>`);
+  if (eligible >= 1) buttons.push(`<button class="secondary" type="button" data-action="overtime-request-grant" data-record-id="${esc(item.id)}" data-days="1">\uc804\uc77c \uc694\uccad</button>`);
+  return `<div class="actions">${buttons.join("")}</div>`;
+}
+
+function overtimeRecordsForDate(date) {
+  return filteredOvertimeRecords().filter((item) => item.date === date);
+}
+
+function overtimeCalendar() {
+  const days = monthDays(state.overtimeCalendarMonth);
+  const weekLabels = ["\uc77c", "\uc6d4", "\ud654", "\uc218", "\ubaa9", "\uae08", "\ud1a0"];
+  return `
+    <div class="calendar-toolbar">
+      <div class="actions">
+        <button class="secondary" type="button" data-action="overtime-month-shift" data-offset="0">\uc624\ub298</button>
+        <button class="secondary" type="button" data-action="overtime-month-shift" data-offset="-1">\uc774\uc804 \ub2ec</button>
+        <strong>${esc(monthTitle(state.overtimeCalendarMonth))}</strong>
+        <button class="secondary" type="button" data-action="overtime-month-shift" data-offset="1">\ub2e4\uc74c \ub2ec</button>
+      </div>
+      <span class="muted">\ub0a0\uc9dc\ub97c \ud074\ub9ad\ud558\uba74 \ucd94\uac00\uadfc\ubb34 \uc0c1\uc138 \ub0b4\uc5ed\uc744 \ubd05\ub2c8\ub2e4.</span>
+    </div>
+    <div class="calendar-grid" style="margin-top:14px;">
+      ${weekLabels.map((label) => `<div class="calendar-weekday">${label}</div>`).join("")}
+      ${days.map((day) => {
+        const records = overtimeRecordsForDate(day.date);
+        const requested = records.filter((item) => item.requestedGrantDays > 0).length;
+        const approved = records.filter((item) => item.status === "APPROVED").length;
+        const recognizedHours = records.reduce((sum, item) => sum + Number(item.recognizedMinutes || 0), 0);
+        const hasRecords = records.length > 0;
+        return `
+          <div class="calendar-day ${day.inMonth ? "" : "is-other-month"} ${day.date === today() ? "is-today" : ""}">
+            <header><span>${day.day}</span></header>
+            <div class="calendar-body">
+              ${hasRecords ? `
+                <button class="calendar-summary-button" type="button" data-action="show-overtime-day" data-date="${esc(day.date)}">
+                  <div class="calendar-metric total"><span>\uae30\ub85d \uac74\uc218</span><strong>${records.length}\uac74</strong></div>
+                  <div class="calendar-metric"><span>\uc778\uc815\uc2dc\uac04</span><strong>${esc(formatMinutes(recognizedHours))}</strong></div>
+                  <div class="calendar-metric"><span>\ub300\uccb4\ud734\uac00 \uc694\uccad</span><strong>${requested}\uac74</strong></div>
+                  <div class="calendar-metric"><span>\uc2b9\uc778\uc644\ub8cc</span><strong>${approved}\uac74</strong></div>
+                </button>
+                ${records.slice(0, 2).map((item) => `
+                  <div class="calendar-entry">
+                    <strong>${esc(item.user?.name || "-")}</strong>
+                    <span>${esc(T.overtimeDayType[item.dayType] || item.dayType)} / ${esc(formatMinutes(item.recognizedMinutes))}</span>
+                  </div>
+                `).join("")}
+                ${records.length > 2 ? `<div class="calendar-empty">+ ${records.length - 2}\uac74 \ub354\ubcf4\uae30</div>` : ""}
+              ` : ""}
+            </div>
+          </div>
+        `;
+      }).join("")}
+    </div>
+  `;
+}
+
+function overtimePage() {
+  const records = filteredOvertimeRecords();
+  const summary = overtimeSummary(records);
+  return appFrame(
+    "\ucd94\uac00\uadfc\ubb34 \uad00\ub9ac",
+    "\ud734\uc77c\u00b7\uc5f0\uc7a5 \uadfc\ubb34 \ub0b4\uc5ed\uacfc \ub300\uccb4\ud734\uac00 \uc694\uccad \ud604\ud669\uc744 \ud568\uaed8 \uad00\ub9ac\ud569\ub2c8\ub2e4.",
+    `
+      <section class="surface">
+        <form id="overtime-filter-form" class="filters">
+          <label>\uc2dc\uc791\uc77c<input type="date" name="from" value="${esc(state.overtimeFilters.from)}"></label>
+          <label>\uc885\ub8cc\uc77c<input type="date" name="to" value="${esc(state.overtimeFilters.to)}"></label>
+          ${(isExecutive() || isTeamLead()) ? `
+            <label>\uc0ac\uc6a9\uc790
+              <select name="userId">
+                <option value="">\uc804\uccb4</option>
+                ${state.users.filter((user) => isAttendanceTarget(user)).map((user) => `<option value="${esc(user.id)}" ${state.overtimeFilters.userId === user.id ? "selected" : ""}>${esc(user.name)} (${esc(T.role[user.role] || user.role)})</option>`).join("")}
+              </select>
+            </label>
+          ` : ""}
+          <label>\uc0c1\ud0dc
+            <select name="status">
+              <option value="">\uc804\uccb4</option>
+              ${Object.entries(T.overtimeStatus).map(([key, label]) => `<option value="${esc(key)}" ${state.overtimeFilters.status === key ? "selected" : ""}>${esc(label)}</option>`).join("")}
+            </select>
+          </label>
+          <button type="submit">\uc870\ud68c</button>
+        </form>
+      </section>
+        <section class="summary-band">
+          <div class="summary-title">
+            <h2>\ucd94\uac00\uadfc\ubb34 \uc694\uc57d</h2>
+            <p>\ud734\uc77c \uadfc\ubb34\ub294 4\uc2dc\uac04 \ucd08\uacfc \uc2dc \ubc18\ucc28, 8\uc2dc\uac04 \ucd08\uacfc \uc2dc 1\uc77c \uc694\uccad\uc774 \uac00\ub2a5\ud569\ub2c8\ub2e4.</p>
+          </div>
+          <div class="summary-grid summary-grid-attendance" style="grid-template-columns: repeat(4, minmax(0, 1fr));">
+            ${summaryButton("\uae30\ub85d \uac74\uc218", `${summary.total}\uac74`, "show-overtime-summary-records")}
+            ${summaryButton("\uc778\uc815\uc2dc\uac04", esc(formatMinutes(summary.recognizedMinutes)), "show-overtime-summary-recognized")}
+            ${summaryItem("\ub300\uccb4\ud734\uac00 \uc694\uccad", `${summary.requestedDays}\uc77c`)}
+            ${summaryItem("\uc2b9\uc778 \ub300\uae30", `${summary.pending}\uac74`, summary.pending ? "danger-value" : "")}
+          </div>
+        </section>
+      <section class="surface">
+        <div class="actions" style="justify-content: space-between;">
+          <h3>\ucd94\uac00\uadfc\ubb34 \ub0b4\uc5ed</h3>
+          <div class="actions">
+            <div class="view-toggle">
+              <button class="${state.overtimeViewMode === "table" ? "secondary" : "ghost"}" type="button" data-action="overtime-view" data-view="table">\ubaa9\ub85d</button>
+              <button class="${state.overtimeViewMode === "calendar" ? "secondary" : "ghost"}" type="button" data-action="overtime-view" data-view="calendar">\uce98\ub9b0\ub354</button>
+            </div>
+            ${isAttendanceTarget(state.me) ? `<button type="button" data-action="open-overtime-create">\ucd94\uac00\uadfc\ubb34 \ub4f1\ub85d</button>` : ""}
+          </div>
+        </div>
+        ${state.overtimeViewMode === "calendar" ? overtimeCalendar() : overtimeTable(records, false, true)}
+        <p class="table-note overtime-note">
+          \ud1f4\uadfc \uc608\uc815\uc2dc\uac04 \ud6c4 30\ubd84 \uc774\ub0b4 \uccb4\ub958\ub294 \uc6d0\uce59\uc801\uc73c\ub85c \uc5f0\uc7a5\uadfc\ub85c\ub85c \ubcf4\uc9c0 \uc54a\ub418,<br>
+          \uc2e4\uc81c \uc5c5\ubb34 \uc218\ud589\uc774 \uc788\uc5c8\ub358 \uacbd\uc6b0 \uadfc\ub85c\uc790\uac00 \uc0ac\ud6c4 \uc2e0\uccad\ud560 \uc218 \uc788\uace0,<br>
+          \uad00\ub9ac\uc790\ub294 \uc5c5\ubb34\uc9c0\uc2dc\u00b7\uc5c5\ubb34\uc218\ud589 \ub0b4\uc5ed\uc744 \ud655\uc778\ud574 \uc2b9\uc778 \ub610\ub294 \ubc18\ub824\ud55c\ub2e4.
+        </p>
       </section>
     `
   );
@@ -874,23 +1149,25 @@ function leaveCalendar() {
         const requests = leaveRequestsForDate(day.date);
         const approved = requests.filter((item) => item.status === "APPROVED").length;
         const pending = requests.filter((item) => item.status === "PENDING_TEAM_LEAD" || item.status === "PENDING_EXECUTIVE").length;
+        const hasRequests = requests.length > 0;
         return `
           <div class="calendar-day ${day.inMonth ? "" : "is-other-month"} ${day.date === today() ? "is-today" : ""}">
             <header><span>${day.day}</span></header>
             <div class="calendar-body">
-              <button class="calendar-summary-button" type="button" data-action="show-leave-day" data-date="${esc(day.date)}">
-                <div class="calendar-metric total"><span>\ud734\uac00 \uac74\uc218</span><strong>${requests.length}\uac74</strong></div>
-                <div class="calendar-metric"><span>\uc2b9\uc778\uc644\ub8cc</span><strong>${approved}\uac74</strong></div>
-                <div class="calendar-metric"><span>\uc2b9\uc778\ub300\uae30</span><strong>${pending}\uac74</strong></div>
-              </button>
-              ${requests.slice(0, 2).map((item) => `
-                <div class="calendar-entry">
-                  <strong>${esc(item.user?.name || "-")}</strong>
-                  <span>${esc(T.leaveType[item.type] || item.type)}</span>
-                </div>
-              `).join("")}
-              ${requests.length > 2 ? `<div class="calendar-empty">+ ${requests.length - 2}\uac74 \ub354\ubcf4\uae30</div>` : ""}
-              ${!requests.length ? `<div class="calendar-empty">\ub0b4\uc5ed \uc5c6\uc74c</div>` : ""}
+              ${hasRequests ? `
+                <button class="calendar-summary-button" type="button" data-action="show-leave-day" data-date="${esc(day.date)}">
+                  <div class="calendar-metric total"><span>\ud734\uac00 \uac74\uc218</span><strong>${requests.length}\uac74</strong></div>
+                  <div class="calendar-metric"><span>\uc2b9\uc778\uc644\ub8cc</span><strong>${approved}\uac74</strong></div>
+                  <div class="calendar-metric"><span>\uc2b9\uc778\ub300\uae30</span><strong>${pending}\uac74</strong></div>
+                </button>
+                ${requests.slice(0, 2).map((item) => `
+                  <div class="calendar-entry">
+                    <strong>${esc(item.user?.name || "-")}</strong>
+                    <span>${esc(T.leaveType[item.type] || item.type)}</span>
+                  </div>
+                `).join("")}
+                ${requests.length > 2 ? `<div class="calendar-empty">+ ${requests.length - 2}\uac74 \ub354\ubcf4\uae30</div>` : ""}
+              ` : ""}
             </div>
           </div>
         `;
@@ -905,7 +1182,7 @@ function leaveAdjustmentTable() {
   return `
     <div class="table-wrap">
       <table>
-        <thead><tr><th>\ub4f1\ub85d\uc77c\uc2dc</th><th>\uc9c1\uc6d0</th><th>\uad6c\ubd84</th><th>\uc77c\uc218</th><th>\uc0ac\uc720</th></tr></thead>
+        <thead><tr><th>\ub4f1\ub85d\uc77c\uc2dc</th><th>\uc9c1\uc6d0</th><th>\uad6c\ubd84</th><th>\uc77c\uc218</th><th>\uc0ac\uc720</th><th>\ucc98\ub9ac</th></tr></thead>
         <tbody>
           ${adjustments.map((item) => `
             <tr>
@@ -914,6 +1191,7 @@ function leaveAdjustmentTable() {
               <td>${esc(item.kind === "COMPENSATORY" ? "\ub300\uccb4\ud734\uac00 \ubd80\uc5ec" : "\uc5f0\ucc28 \uc870\uc815")}</td>
               <td>${esc(item.days)}\uc77c</td>
               <td>${esc(item.reason || "-")}</td>
+              <td><button class="ghost" type="button" data-action="delete-leave-adjustment" data-adjustment-id="${esc(item.id)}">\ud68c\uc218/\ucde8\uc18c</button></td>
             </tr>
           `).join("")}
         </tbody>
@@ -968,15 +1246,17 @@ function leaveManagePage() {
 function approvalsPage() {
   const leaveList = state.leaveRequests.filter((item) => item.status === "PENDING_TEAM_LEAD" || item.status === "PENDING_EXECUTIVE");
   const attendanceList = state.attendanceRequests.filter((item) => item.status === "PENDING_TEAM_LEAD" || item.status === "PENDING_EXECUTIVE");
+  const overtimeList = isExecutive() ? state.overtimeRecords.filter((item) => item.status === "PENDING_EXECUTIVE") : [];
   return appFrame(
     "\uc2b9\uc778\uad00\ub9ac",
-    "\ud734\uac00\uc640 \uadfc\ud0dc \uc2b9\uc778 \ub300\uae30 \ub0b4\uc5ed\uc744 \ud568\uaed8 \ucc98\ub9ac\ud569\ub2c8\ub2e4.",
+    "\ud734\uac00, \uadfc\ud0dc, \ucd94\uac00\uadfc\ubb34 \uc2b9\uc778 \ub300\uae30 \ub0b4\uc5ed\uc744 \ud568\uaed8 \ucc98\ub9ac\ud569\ub2c8\ub2e4.",
     `
       <section class="summary-band">
-        <div class="summary-grid summary-grid-attendance">
+        <div class="summary-grid" style="grid-template-columns: repeat(4, minmax(0, 1fr));">
           ${summaryItem("\ud734\uac00 \uc2b9\uc778 \ub300\uae30", `${leaveList.length}\uac74`)}
           ${summaryItem("\uadfc\ud0dc \uc218\uc815 \ub300\uae30", `${attendanceList.length}\uac74`)}
-          ${summaryItem("\ucd1d \ucc98\ub9ac \ub300\uae30", `${leaveList.length + attendanceList.length}\uac74`)}
+          ${summaryItem("\ucd94\uac00\uadfc\ubb34 \ub300\uae30", `${overtimeList.length}\uac74`)}
+          ${summaryItem("\ucd1d \ucc98\ub9ac \ub300\uae30", `${leaveList.length + attendanceList.length + overtimeList.length}\uac74`)}
         </div>
       </section>
       <section class="grid two">
@@ -988,6 +1268,10 @@ function approvalsPage() {
           <h3>\uadfc\ud0dc \uc218\uc815 \uc2b9\uc778</h3>
           ${attendanceRequestsApprovalTable(attendanceList)}
         </section>
+      </section>
+      <section class="surface">
+        <h3>\ucd94\uac00\uadfc\ubb34 \uc2b9\uc778</h3>
+        ${overtimeTable(overtimeList, true)}
       </section>
     `
   );
@@ -1087,6 +1371,42 @@ function teamsPage() {
     "\ud300\uc744 \ucd94\uac00\ud558\uace0 \uc218\uc815\ud569\ub2c8\ub2e4.",
     `<section class="surface"><div class="actions" style="justify-content: space-between;"><h3>\ud300 \ubaa9\ub85d</h3><button type="button" data-action="open-team-create">\ud300 \uc0dd\uc131</button></div>${teamsTable()}</section>`
   );
+}
+
+function holidaysPage() {
+  return appFrame(
+    "\ud734\uc77c \ub4f1\ub85d\uad00\ub9ac",
+    "\uad00\ub9ac\uc790\uac00 \uacf5\ud734\uc77c\uc744 \ub4f1\ub85d\ud558\uba74 \ucd94\uac00\uadfc\ubb34 \uad6c\ubd84\uc5d0\uc11c \uc790\ub3d9\uc73c\ub85c \ud734\uc77c\ub85c \ucc98\ub9ac\ud569\ub2c8\ub2e4.",
+    `
+      <section class="surface">
+        <div class="actions" style="justify-content: space-between;">
+          <h3>\ud734\uc77c \ubaa9\ub85d</h3>
+          <button type="button" data-action="open-holiday-create">\ud734\uc77c \ub4f1\ub85d</button>
+        </div>
+        ${holidaysTable()}
+      </section>
+    `
+  );
+}
+
+function holidaysTable() {
+  if (!state.holidays.length) return `<div class="empty">\ub4f1\ub85d\ub41c \ud734\uc77c\uc774 \uc5c6\uc2b5\ub2c8\ub2e4.</div>`;
+  return `
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>\ub0a0\uc9dc</th><th>\uba85\uce6d</th><th>\ucc98\ub9ac</th></tr></thead>
+        <tbody>
+          ${state.holidays.map((item) => `
+            <tr>
+              <td>${esc(item.date)}</td>
+              <td>${esc(item.name)}</td>
+              <td><button class="ghost" type="button" data-action="delete-holiday" data-holiday-id="${esc(item.id)}">\uc0ad\uc81c</button></td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
 }
 
 function teamsTable() {
@@ -1220,11 +1540,12 @@ function canDashboardQueueTitle() {
   return "\ub0b4 \uc548\ub0b4";
 }
 
-function dashboardQueueContent(pendingLeaveApprovals, pendingAttendanceApprovals) {
+function dashboardQueueContent(pendingLeaveApprovals, pendingAttendanceApprovals, pendingOvertimeApprovals = []) {
   if (isExecutive() || isTeamLead()) {
     const items = [];
     if (pendingLeaveApprovals.length) items.push(`<div class="notice">\ud734\uac00 \uc2b9\uc778 \ub300\uae30 ${pendingLeaveApprovals.length}\uac74</div>`);
     if (pendingAttendanceApprovals.length) items.push(`<div class="notice">\uadfc\ud0dc \uc2b9\uc778 \ub300\uae30 ${pendingAttendanceApprovals.length}\uac74</div>`);
+    if (pendingOvertimeApprovals.length) items.push(`<div class="notice">\ucd94\uac00\uadfc\ubb34 \uc2b9\uc778 \ub300\uae30 ${pendingOvertimeApprovals.length}\uac74</div>`);
     if (!items.length) return `<div class="empty">\ucc98\ub9ac\ud560 \uc2b9\uc778 \ub300\uae30 \uac74\uc774 \uc5c6\uc2b5\ub2c8\ub2e4.</div>`;
     return `<div class="stack">${items.join("")}</div>`;
   }
@@ -1326,6 +1647,7 @@ function renderApp() {
   let html = "";
   if (state.tab === "dashboard") html = dashboardPage();
   else if (state.tab === "attendance") html = attendancePage();
+  else if (state.tab === "overtime") html = overtimePage();
   else if (state.tab === "attendanceRequests") html = attendanceRequestsPage();
   else if (state.tab === "leave") html = leavePage();
   else if (state.tab === "leaveManage") html = leaveManagePage();
@@ -1333,6 +1655,7 @@ function renderApp() {
   else if (state.tab === "mypage") html = myPagePage();
   else if (state.tab === "users") html = usersPage();
   else if (state.tab === "teams") html = teamsPage();
+  else if (state.tab === "holidays") html = holidaysPage();
   else if (state.tab === "settings") html = settingsPage();
   else if (state.tab === "audit") html = auditPage();
   q("#app").innerHTML = html;
@@ -1628,6 +1951,106 @@ function openLeaveDayModal(date) {
   `);
 }
 
+function openOvertimeDayModal(date) {
+  const records = overtimeRecordsForDate(date);
+  const summary = overtimeSummary(records);
+  openModal(`
+    <section class="modal-panel wide-modal">
+      <div class="modal-head">
+        <div><h2>${esc(date)} \ucd94\uac00\uadfc\ubb34 \ud604\ud669</h2><p>\uc77c\uc790 \uae30\uc900 \uc0c1\uc138 \ub0b4\uc5ed\uc785\ub2c8\ub2e4.</p></div>
+        <button class="secondary" type="button" data-action="close-modal">\ub2eb\uae30</button>
+      </div>
+      <div class="summary-grid summary-grid-attendance" style="grid-template-columns: repeat(4, minmax(0, 1fr));">
+        ${summaryItem("\uae30\ub85d \uac74\uc218", `${summary.total}\uac74`)}
+        ${summaryItem("\uc778\uc815\uc2dc\uac04", esc(formatMinutes(summary.recognizedMinutes)))}
+        ${summaryItem("\ub300\uccb4\ud734\uac00 \uc694\uccad", `${summary.requestedDays}\uc77c`)}
+        ${summaryItem("\uc2b9\uc778\uc644\ub8cc", `${summary.approved}\uac74`)}
+      </div>
+      <section class="surface" style="margin-top:14px;">
+        <h3>\uc0c1\uc138 \ubaa9\ub85d</h3>
+        ${overtimeTable(records, false, true)}
+      </section>
+    </section>
+  `);
+}
+
+function openOvertimeSummaryModal(mode) {
+  const records = filteredOvertimeRecords();
+  const title = mode === "recognized" ? "\uc778\uc815\uc2dc\uac04 \uc0c1\uc138" : "\uae30\ub85d \uac74\uc218 \uc0c1\uc138";
+  const description = mode === "recognized"
+    ? "\uc778\uc815\uc2dc\uac04 \uae30\uc900\uc73c\ub85c \ubc18\ucc28/\uc804\uc77c \uc694\uccad\uc744 \uc9c4\ud589\ud560 \uc218 \uc788\uc2b5\ub2c8\ub2e4."
+    : "\ud604\uc7ac \uc870\ud68c \uc870\uac74\uc758 \ucd94\uac00\uadfc\ubb34 \uae30\ub85d \ubaa9\ub85d\uc785\ub2c8\ub2e4.";
+  const summary = overtimeSummary(records);
+  openModal(`
+    <section class="modal-panel wide-modal">
+      <div class="modal-head">
+        <div><h2>${title}</h2><p>${description}</p></div>
+        <button class="secondary" type="button" data-action="close-modal">\ub2eb\uae30</button>
+      </div>
+      <div class="summary-grid summary-grid-attendance" style="grid-template-columns: repeat(4, minmax(0, 1fr));">
+        ${summaryItem("\uae30\ub85d \uac74\uc218", `${summary.total}\uac74`)}
+        ${summaryItem("\uc778\uc815\uc2dc\uac04", esc(formatMinutes(summary.recognizedMinutes)))}
+        ${summaryItem("\ub300\uccb4\ud734\uac00 \uc694\uccad", `${summary.requestedDays}\uc77c`)}
+        ${summaryItem("\uc2b9\uc778 \ub300\uae30", `${summary.pending}\uac74`)}
+      </div>
+      <section class="surface" style="margin-top:14px;">
+        <h3>\uc0c1\uc138 \ub0b4\uc5ed</h3>
+        ${overtimeTable(records, false, true)}
+      </section>
+    </section>
+  `);
+}
+
+function openOvertimeModal() {
+  const defaults = overtimeFormDefaults();
+  openModal(`
+    <section class="modal-panel wide-modal">
+      <div class="modal-head">
+        <div><h2>\ucd94\uac00\uadfc\ubb34 \ub4f1\ub85d</h2><p>\ud734\uc77c \uadfc\ubb34\ub294 4\uc2dc\uac04 \ucd08\uacfc \uc2dc 0.5\uc77c, 8\uc2dc\uac04 \ucd08\uacfc \uc2dc 1\uc77c \uc694\uccad\uc774 \uac00\ub2a5\ud569\ub2c8\ub2e4.</p></div>
+        <button class="secondary" type="button" data-action="close-modal">\ub2eb\uae30</button>
+      </div>
+      <form id="overtime-form" class="form-grid">
+        <label>\uae30\uc900\uc77c<input type="date" name="date" value="${esc(defaults.date)}" required></label>
+        <label>\uadfc\ubb34 \uad6c\ubd84<input name="dayTypeText" value="${esc(overtimeDayLabel(defaults.date))}" readonly data-overtime-day-type></label>
+        <label>\ucd9c\uadfc\uc2dc\uac04<input type="time" name="checkInTime" value="${esc(defaults.checkInTime)}" required data-overtime-check-in></label>
+        <div class="wide">
+          <div class="grid two">
+            <label>\ud1f4\uadfc\uc77c<input type="date" name="checkOutDate" value="${esc(defaults.checkOutDate)}" required></label>
+            <label>\ud1f4\uadfc\uc2dc\uac04<input type="time" name="checkOutTime" required></label>
+          </div>
+        </div>
+        <label class="wide">\uc0ac\uc720<textarea name="reason" placeholder="\ucd94\uac00\uadfc\ubb34 \uc0ac\uc720\ub97c \uc785\ub825\ud574 \uc8fc\uc138\uc694." required></textarea></label>
+        <div class="wide">
+          <p class="field-hint">\uc120\ud0dd\ud55c \ub0a0\uc9dc\uc5d0 \ucd9c\uadfc\uae30\ub85d\uc774 \uc788\uc73c\uba74 \ucd9c\uadfc\uc2dc\uac04\uc744 \uc790\ub3d9\uc73c\ub85c \uac00\uc838\uc635\ub2c8\ub2e4. \ud3c9\uc77c\uc740 \uac1c\uc778\ubcc4 \uc815\uc0c1 \ud1f4\uadfc\uc2dc\uac04 \uc774\ud6c4\ubd80\ud130 \uc2e4\uc81c \ud1f4\uadfc\uc2dc\uac04\uae4c\uc9c0\ub9cc \ucd94\uac00\uadfc\ubb34\ub85c \uacc4\uc0b0\ud569\ub2c8\ub2e4.</p>
+          <button type="submit">\ub4f1\ub85d</button>
+        </div>
+      </form>
+    </section>
+  `);
+}
+
+function openOvertimeDecisionModal(recordId, action) {
+  const record = state.overtimeRecords.find((item) => item.id === recordId);
+  if (!record) return;
+  openModal(`
+    <section class="modal-panel">
+      <div class="modal-head">
+        <div><h2>${action === "approve" ? "\ucd94\uac00\uadfc\ubb34 \uc2b9\uc778" : "\ucd94\uac00\uadfc\ubb34 \ubc18\ub824"}</h2></div>
+        <button class="secondary" type="button" data-action="close-modal">\ub2eb\uae30</button>
+      </div>
+      <form id="overtime-decision-form" class="form-grid compact">
+        <input type="hidden" name="recordId" value="${esc(record.id)}">
+        <input type="hidden" name="action" value="${esc(action)}">
+        <label class="wide">\ub300\uc0c1
+          <input value="${esc(`${record.user?.name || "-"} / ${record.date} / ${formatMinutes(record.recognizedMinutes)} / ${record.requestedGrantDays || 0}일`)}" readonly>
+        </label>
+        <label class="wide">\ube44\uace0<textarea name="comment" placeholder="${action === "approve" ? "\uc2b9\uc778 \uba54\ubaa8 (\uc120\ud0dd)" : "\ubc18\ub824 \uc0ac\uc720 (\uc120\ud0dd)"}"></textarea></label>
+        <div class="wide"><button type="submit">${action === "approve" ? "\uc2b9\uc778" : "\ubc18\ub824"}</button></div>
+      </form>
+    </section>
+  `);
+}
+
 function openUserModal(userId = "") {
   const user = state.users.find((item) => item.id === userId) || null;
   const role = user?.role || "EMPLOYEE";
@@ -1691,6 +2114,22 @@ function openTeamModal(teamId = "") {
   `);
 }
 
+function openHolidayModal() {
+  openModal(`
+    <section class="modal-panel">
+      <div class="modal-head">
+        <div><h2>\ud734\uc77c \ub4f1\ub85d</h2></div>
+        <button class="secondary" type="button" data-action="close-modal">\ub2eb\uae30</button>
+      </div>
+      <form id="holiday-form" class="form-grid compact">
+        <label>\ub0a0\uc9dc<input type="date" name="date" value="${esc(today())}" required></label>
+        <label class="wide">\uba85\uce6d<input name="name" placeholder="\uc608: \uc5b4\ub9b0\uc774\ub0a0, \ub300\uccb4\uacf5\ud734\uc77c" required></label>
+        <div class="wide"><button type="submit">\ub4f1\ub85d</button></div>
+      </form>
+    </section>
+  `);
+}
+
 function openIpModal() {
   openModal(`
     <section class="modal-panel">
@@ -1727,7 +2166,9 @@ async function refreshAll() {
     api(`/api/attendance?from=${encodeURIComponent(state.attendanceFilters.from)}&to=${encodeURIComponent(state.attendanceFilters.to)}${state.attendanceFilters.userId ? `&userId=${encodeURIComponent(state.attendanceFilters.userId)}` : ""}`),
     api("/api/attendance-change-requests"),
     api(`/api/leave-balances?year=${encodeURIComponent(state.leaveYear)}`),
-    api("/api/leave-requests")
+    api("/api/leave-requests"),
+    api("/api/overtime-records"),
+    api("/api/holidays")
   ];
   if (isExecutive()) {
     tasks.push(api("/api/leave-adjustments"));
@@ -1741,14 +2182,16 @@ async function refreshAll() {
   state.attendanceRequests = results[3].requests || [];
   state.leaveBalances = results[4].balances || [];
   state.leaveRequests = results[5].requests || [];
+  state.overtimeRecords = results[6].records || [];
+  state.holidays = results[7].holidays || [];
   if (!state.selectedUserId || !state.users.some((user) => user.id === state.selectedUserId)) {
     state.selectedUserId = state.users[0]?.id || "";
   }
   if (isExecutive()) {
-    state.leaveAdjustments = results[6].adjustments || [];
-    state.allowedIps = results[7].allowedIps || [];
-    state.ipRestrictionEnabled = Boolean(results[7].ipRestrictionEnabled);
-    state.auditLogs = results[8].logs || [];
+    state.leaveAdjustments = results[8].adjustments || [];
+    state.allowedIps = results[9].allowedIps || [];
+    state.ipRestrictionEnabled = Boolean(results[9].ipRestrictionEnabled);
+    state.auditLogs = results[10].logs || [];
   }
   renderApp();
 }
@@ -1819,6 +2262,30 @@ document.addEventListener("click", async (event) => {
       openLeaveDayModal(button.dataset.date);
       return;
     }
+    if (action === "overtime-view") {
+      state.overtimeViewMode = button.dataset.view || "table";
+      renderApp();
+      return;
+    }
+    if (action === "overtime-month-shift") {
+      const offset = Number(button.dataset.offset || 0);
+      state.overtimeCalendarMonth = offset === 0 ? monthValue(today()) : shiftMonth(state.overtimeCalendarMonth, offset);
+      state.overtimeViewMode = "calendar";
+      renderApp();
+      return;
+    }
+    if (action === "show-overtime-day") {
+      openOvertimeDayModal(button.dataset.date);
+      return;
+    }
+    if (action === "show-overtime-summary-records") {
+      openOvertimeSummaryModal("records");
+      return;
+    }
+    if (action === "show-overtime-summary-recognized") {
+      openOvertimeSummaryModal("recognized");
+      return;
+    }
     if (action === "check-in") {
       openAttendanceMarkModal("checkIn");
       return;
@@ -1865,8 +2332,50 @@ document.addEventListener("click", async (event) => {
       openLeaveAdjustModal();
       return;
     }
+    if (action === "open-overtime-create") {
+      openOvertimeModal();
+      return;
+    }
+    if (action === "overtime-approve") {
+      openOvertimeDecisionModal(button.dataset.recordId, "approve");
+      return;
+    }
+    if (action === "overtime-reject") {
+      openOvertimeDecisionModal(button.dataset.recordId, "reject");
+      return;
+    }
+    if (action === "overtime-request-grant") {
+      const days = Number(button.dataset.days || 0);
+      const recordId = button.dataset.recordId;
+      const label = days === 0.5 ? "반차" : "전일";
+      if (!confirm(`${label} 대체휴가를 요청할까요?`)) return;
+      await api(`/api/overtime-records/${encodeURIComponent(recordId)}/grant-request`, {
+        method: "POST",
+        body: { requestedGrantDays: days }
+      });
+      await refreshAll();
+      notify(`${label} 대체휴가 요청을 등록했습니다.`);
+      return;
+    }
+    if (action === "overtime-cancel-grant") {
+      if (!confirm("대체휴가 요청을 취소할까요?")) return;
+      await api(`/api/overtime-records/${encodeURIComponent(button.dataset.recordId)}/grant-request`, {
+        method: "POST",
+        body: { requestedGrantDays: 0 }
+      });
+      await refreshAll();
+      notify("대체휴가 요청을 취소했습니다.");
+      return;
+    }
     if (action === "show-leave-balance") {
       openLeaveBalanceModal(button.dataset.userId);
+      return;
+    }
+    if (action === "delete-leave-adjustment") {
+      if (!confirm("\ud574\ub2f9 \ud734\uac00 \ubd80\uc5ec/\uc870\uc815 \uc774\ub825\uc744 \ud68c\uc218 \ub610\ub294 \ucde8\uc18c\ud560\uae4c\uc694?")) return;
+      await api(`/api/leave-adjustments/${encodeURIComponent(button.dataset.adjustmentId)}`, { method: "DELETE" });
+      await refreshAll();
+      notify("\ud734\uac00 \ubd80\uc5ec/\uc870\uc815 \uc774\ub825\uc744 \ud68c\uc218\ud588\uc2b5\ub2c8\ub2e4.");
       return;
     }
     if (action === "open-user-create") {
@@ -1886,6 +2395,10 @@ document.addEventListener("click", async (event) => {
       openTeamModal();
       return;
     }
+    if (action === "open-holiday-create") {
+      openHolidayModal();
+      return;
+    }
     if (action === "open-team-edit") {
       openTeamModal(button.dataset.teamId);
       return;
@@ -1895,6 +2408,13 @@ document.addEventListener("click", async (event) => {
       await api(`/api/teams/${encodeURIComponent(button.dataset.teamId)}`, { method: "DELETE" });
       await refreshAll();
       notify("\ud300\uc744 \uc0ad\uc81c\ud588\uc2b5\ub2c8\ub2e4.");
+      return;
+    }
+    if (action === "delete-holiday") {
+      if (!confirm("\ud734\uc77c\uc744 \uc0ad\uc81c\ud560\uae4c\uc694?")) return;
+      await api(`/api/holidays/${encodeURIComponent(button.dataset.holidayId)}`, { method: "DELETE" });
+      await refreshAll();
+      notify("\ud734\uc77c\uc744 \uc0ad\uc81c\ud588\uc2b5\ub2c8\ub2e4.");
       return;
     }
     if (action === "open-ip-create") {
@@ -1915,13 +2435,23 @@ document.addEventListener("click", async (event) => {
 
 document.addEventListener("change", (event) => {
   const select = event.target.closest("[data-role-select]");
-  if (!select) return;
-  const form = select.closest("form");
-  const teamSelect = form?.querySelector('select[name="teamId"]');
-  if (!teamSelect) return;
-  const disabled = select.value === "EXECUTIVE";
-  teamSelect.disabled = disabled;
-  if (disabled) teamSelect.value = "";
+  if (select) {
+    const form = select.closest("form");
+    const teamSelect = form?.querySelector('select[name="teamId"]');
+    if (!teamSelect) return;
+    const disabled = select.value === "EXECUTIVE";
+    teamSelect.disabled = disabled;
+    if (disabled) teamSelect.value = "";
+    return;
+  }
+  const overtimeDate = event.target.closest('input[name="date"]');
+  if (overtimeDate && overtimeDate.form?.id === "overtime-form") {
+    const indicator = overtimeDate.form.querySelector("[data-overtime-day-type]");
+    if (indicator) indicator.value = overtimeDayLabel(overtimeDate.value || today());
+    const checkIn = overtimeDate.form.querySelector("[data-overtime-check-in]");
+    const attendanceRecord = attendanceRecordForDate(overtimeDate.value || today());
+    if (checkIn) checkIn.value = attendanceRecord?.checkInAt ? timeValue(attendanceRecord.checkInAt) : "";
+  }
 });
 
 document.addEventListener("submit", async (event) => {
@@ -1961,6 +2491,14 @@ document.addEventListener("submit", async (event) => {
       state.leaveManageFilters.to = data.to || "";
       state.leaveManageFilters.userId = data.userId || "";
       state.leaveManageFilters.kind = data.kind || "";
+      renderApp();
+      return;
+    }
+    if (form.id === "overtime-filter-form") {
+      state.overtimeFilters.from = data.from || "";
+      state.overtimeFilters.to = data.to || "";
+      state.overtimeFilters.userId = data.userId || "";
+      state.overtimeFilters.status = data.status || "";
       renderApp();
       return;
     }
@@ -2048,6 +2586,33 @@ document.addEventListener("submit", async (event) => {
       notify("\ud734\uac00 \ubd80\uc5ec/\uc870\uc815\uc744 \uc800\uc7a5\ud588\uc2b5\ub2c8\ub2e4.");
       return;
     }
+    if (form.id === "overtime-form") {
+      await api("/api/overtime-records", {
+        method: "POST",
+        body: {
+          date: data.date,
+          dayType: data.dayType,
+          checkInTime: data.checkInTime,
+          checkOutDate: data.checkOutDate,
+          checkOutTime: data.checkOutTime,
+          reason: data.reason || ""
+        }
+      });
+      closeModal();
+      await refreshAll();
+      notify("\ucd94\uac00\uadfc\ubb34 \ub0b4\uc5ed\uc744 \ub4f1\ub85d\ud588\uc2b5\ub2c8\ub2e4.");
+      return;
+    }
+    if (form.id === "overtime-decision-form") {
+      await api(`/api/overtime-records/${encodeURIComponent(data.recordId)}/${data.action}`, {
+        method: "POST",
+        body: { comment: data.comment || "" }
+      });
+      closeModal();
+      await refreshAll();
+      notify(data.action === "approve" ? "\ucd94\uac00\uadfc\ubb34 \uc694\uccad\uc744 \uc2b9\uc778\ud588\uc2b5\ub2c8\ub2e4." : "\ucd94\uac00\uadfc\ubb34 \uc694\uccad\uc744 \ubc18\ub824\ud588\uc2b5\ub2c8\ub2e4.");
+      return;
+    }
     if (form.id === "password-form") {
       await api("/api/me/password", { method: "PATCH", body: data });
       closeModal();
@@ -2088,6 +2653,13 @@ document.addEventListener("submit", async (event) => {
       closeModal();
       await refreshAll();
       notify(data.teamId ? "\ud300\uc744 \uc218\uc815\ud588\uc2b5\ub2c8\ub2e4." : "\ud300\uc744 \uc0dd\uc131\ud588\uc2b5\ub2c8\ub2e4.");
+      return;
+    }
+    if (form.id === "holiday-form") {
+      await api("/api/holidays", { method: "POST", body: { date: data.date, name: data.name } });
+      closeModal();
+      await refreshAll();
+      notify("\ud734\uc77c\uc744 \ub4f1\ub85d\ud588\uc2b5\ub2c8\ub2e4.");
       return;
     }
     if (form.id === "ip-form") {

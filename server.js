@@ -189,6 +189,8 @@ function ensureDataStore() {
     leaveRequests: [],
     leaveApprovalLogs: [],
     leaveAdjustments: [],
+    overtimeRecords: [],
+    holidays: [],
     auditLogs: []
   };
   writeDb(db);
@@ -196,7 +198,7 @@ function ensureDataStore() {
 }
 
 function normalizeDb(db) {
-  ["teams", "users", "allowedIps", "sessions", "attendanceRecords", "attendanceChangeRequests", "attendanceAdjustmentLogs", "leaveRequests", "leaveApprovalLogs", "leaveAdjustments", "auditLogs"].forEach((key) => {
+  ["teams", "users", "allowedIps", "sessions", "attendanceRecords", "attendanceChangeRequests", "attendanceAdjustmentLogs", "leaveRequests", "leaveApprovalLogs", "leaveAdjustments", "overtimeRecords", "holidays", "auditLogs"].forEach((key) => {
     if (!Array.isArray(db[key])) db[key] = [];
   });
   if (!db.settings) db.settings = { serviceName: "사내 근태관리", leaveGrantMonthDay: "01-01", ipRestrictionEnabled: true };
@@ -226,6 +228,20 @@ function normalizeDb(db) {
   db.leaveAdjustments.forEach((entry) => {
     entry.kind = entry.kind || "ANNUAL";
   });
+  db.overtimeRecords.forEach((record) => {
+    record.dayType = record.dayType || "WEEKDAY";
+    record.status = record.status || "RECORDED";
+    record.checkOutDate = record.checkOutDate || String(record.checkOutAt || "").slice(0, 10) || record.date;
+    record.eligibleGrantDays = Number(record.eligibleGrantDays || 0);
+    record.requestedGrantDays = Number(record.requestedGrantDays || 0);
+    record.recognizedMinutes = Number(record.recognizedMinutes || 0);
+    record.actualMinutes = Number(record.actualMinutes || 0);
+    record.decisionComment = String(record.decisionComment || "");
+  });
+  db.holidays.forEach((holiday) => {
+    holiday.date = validateDate(holiday.date);
+    holiday.name = String(holiday.name || "").trim() || "공휴일";
+  });
   return db;
 }
 
@@ -254,6 +270,10 @@ function isExecutive(user) {
 
 function isTeamLead(user) {
   return user && user.role === "TEAM_LEAD";
+}
+
+function isAttendanceTarget(user) {
+  return user && user.role !== "EXECUTIVE";
 }
 
 function resolveUserTeamId(db, role, teamId) {
@@ -528,6 +548,81 @@ function getLeaveBalance(db, userId, year, options = {}) {
     compensatoryRemaining,
     totalUsed: annualUsed + compensatoryUsed,
     totalRemaining: annualRemaining + compensatoryRemaining
+  };
+}
+
+function isWeekendDate(date) {
+  const day = new Date(`${date}T00:00:00`).getDay();
+  return day === 0 || day === 6;
+}
+
+function isRegisteredHoliday(db, date) {
+  return db.holidays.some((holiday) => holiday.date === date);
+}
+
+function isHolidayDate(db, date) {
+  return isWeekendDate(date) || isRegisteredHoliday(db, date);
+}
+
+function minutesBetweenLocalDateTimes(startDate, startTime, endDate, endTime) {
+  validateDate(startDate);
+  validateDate(endDate);
+  const start = new Date(`${startDate}T${validateTime(startTime)}:00`);
+  const end = new Date(`${endDate}T${validateTime(endTime)}:00`);
+  const diff = Math.round((end.getTime() - start.getTime()) / 60000);
+  if (diff <= 0) throw new Error("INVALID_TIME_RANGE");
+  return diff;
+}
+
+function overtimeGrantDays(minutes) {
+  if (minutes > 8 * 60) return 1;
+  if (minutes > 4 * 60) return 0.5;
+  return 0;
+}
+
+function calculateOvertime(db, user, payload) {
+  const date = validateDate(payload.date);
+  const checkOutDate = validateDate(payload.checkOutDate || payload.date);
+  const attendanceRecord = db.attendanceRecords.find((item) => item.userId === user.id && item.date === date);
+  const fallbackCheckInTime = attendanceRecord?.checkInAt
+    ? new Intl.DateTimeFormat("en-GB", {
+      timeZone: APP_TIME_ZONE,
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false
+    }).format(new Date(attendanceRecord.checkInAt))
+    : null;
+  const checkInTime = validateTime(payload.checkInTime || fallbackCheckInTime);
+  const checkOutTime = validateTime(payload.checkOutTime);
+  const dayType = isHolidayDate(db, date) ? "HOLIDAY" : "WEEKDAY";
+  let actualMinutes = minutesBetweenLocalDateTimes(date, checkInTime, checkOutDate, checkOutTime);
+  let recognizedMinutes = actualMinutes;
+  if (dayType === "WEEKDAY") {
+    const scheduledEnd = timeToMinutes(user.workEnd || DEFAULT_WORK_END);
+    const checkOutAt = new Date(`${checkOutDate}T${checkOutTime}:00`);
+    const scheduledEndAt = new Date(`${date}T${user.workEnd || DEFAULT_WORK_END}:00`);
+    const overtimeMinutes = Math.round((checkOutAt.getTime() - scheduledEndAt.getTime()) / 60000);
+    if (overtimeMinutes <= 30) recognizedMinutes = 0;
+    else recognizedMinutes = overtimeMinutes;
+    actualMinutes = Math.max(0, overtimeMinutes);
+  }
+  if (recognizedMinutes <= 0) throw new Error("NO_RECOGNIZED_OVERTIME");
+  const eligibleGrantDays = overtimeGrantDays(recognizedMinutes);
+  const requestedGrantDays = Number(payload.requestedGrantDays || 0);
+  if (![0, 0.5, 1].includes(requestedGrantDays)) throw new Error("INVALID_REQUESTED_GRANT_DAYS");
+  if (requestedGrantDays > eligibleGrantDays) throw new Error("REQUESTED_GRANT_NOT_ELIGIBLE");
+  return {
+    date,
+      dayType,
+      checkInTime,
+      checkOutDate,
+      checkOutTime,
+      checkInAt: isoFromLocalDateTime(date, checkInTime),
+      checkOutAt: isoFromLocalDateTime(checkOutDate, checkOutTime),
+      actualMinutes,
+      recognizedMinutes,
+      eligibleGrantDays,
+    requestedGrantDays
   };
 }
 
@@ -1029,6 +1124,186 @@ async function handleApi(req, res, pathname, searchParams) {
     return;
   }
 
+  if (req.method === "GET" && pathname === "/api/overtime-records") {
+    const scopedIds = scopedUsers(ctx.db, ctx.user).map((item) => item.id);
+    const records = ctx.db.overtimeRecords
+      .filter((record) => scopedIds.includes(record.userId))
+      .slice()
+      .sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")) || String(b.createdAt || "").localeCompare(String(a.createdAt || "")))
+      .map((record) => ({
+        ...record,
+        user: userSummary(ctx.db, record.userId),
+        approvedByUser: userSummary(ctx.db, record.approvedBy),
+        rejectedByUser: userSummary(ctx.db, record.rejectedBy)
+      }));
+    writeDb(ctx.db);
+    sendJson(res, 200, { ok: true, records });
+    return;
+  }
+
+  if (req.method === "GET" && pathname === "/api/holidays") {
+    const holidays = ctx.db.holidays.slice().sort((a, b) => String(a.date).localeCompare(String(b.date)));
+    writeDb(ctx.db);
+    sendJson(res, 200, { ok: true, holidays });
+    return;
+  }
+
+  if (req.method === "POST" && pathname === "/api/holidays") {
+    if (!requireExecutive(ctx, res)) return;
+    const body = await readJsonBody(req);
+    const date = validateDate(body.date);
+    const name = String(body.name || "").trim() || "공휴일";
+    if (ctx.db.holidays.some((holiday) => holiday.date === date)) {
+      return sendError(res, 400, "같은 날짜의 휴일이 이미 등록되어 있습니다.", "DUPLICATE_HOLIDAY");
+    }
+    const holiday = {
+      id: newId("holiday"),
+      date,
+      name,
+      createdBy: ctx.user.id,
+      createdAt: nowIso()
+    };
+    ctx.db.holidays.push(holiday);
+    audit(ctx.db, ctx.user.id, "HOLIDAY_CREATED", { holidayId: holiday.id, date, name }, req);
+    writeDb(ctx.db);
+    sendJson(res, 201, { ok: true, holiday });
+    return;
+  }
+
+  const holidayMatch = routeMatch(pathname, /^\/api\/holidays\/([^/]+)$/);
+  if (req.method === "DELETE" && holidayMatch) {
+    if (!requireExecutive(ctx, res)) return;
+    const [holidayId] = holidayMatch;
+    const holiday = ctx.db.holidays.find((item) => item.id === holidayId);
+    if (!holiday) return sendError(res, 404, "휴일 정보를 찾을 수 없습니다.", "NOT_FOUND");
+    ctx.db.holidays = ctx.db.holidays.filter((item) => item.id !== holidayId);
+    audit(ctx.db, ctx.user.id, "HOLIDAY_DELETED", { holidayId, date: holiday.date, name: holiday.name }, req);
+    writeDb(ctx.db);
+    sendJson(res, 200, { ok: true });
+    return;
+  }
+
+  if (req.method === "POST" && pathname === "/api/overtime-records") {
+    if (!isAttendanceTarget(ctx.user)) return sendError(res, 403, "관리자 계정은 추가근무 기록 대상이 아닙니다.", "FORBIDDEN");
+    const body = await readJsonBody(req);
+    const existing = ctx.db.overtimeRecords.find((item) => item.userId === ctx.user.id && item.date === body.date);
+    if (existing) return sendError(res, 400, "같은 날짜의 추가근무 기록이 이미 있습니다.", "DUPLICATE_OVERTIME");
+    let calculated;
+    try {
+      calculated = calculateOvertime(ctx.db, ctx.user, body);
+    } catch (error) {
+      if (error.message === "NO_RECOGNIZED_OVERTIME") return sendError(res, 400, "추가근무로 인정되는 시간이 없습니다. 평일은 퇴근 기준 30분 초과 시부터 기록됩니다.", "NO_RECOGNIZED_OVERTIME");
+      if (error.message === "REQUESTED_GRANT_NOT_ELIGIBLE") return sendError(res, 400, "요청 가능한 대체휴가 범위를 초과했습니다.", "REQUESTED_GRANT_NOT_ELIGIBLE");
+      if (error.message === "INVALID_REQUESTED_GRANT_DAYS") return sendError(res, 400, "대체휴가 요청 값이 올바르지 않습니다.", "INVALID_REQUESTED_GRANT_DAYS");
+      if (error.message === "INVALID_TIME_RANGE") return sendError(res, 400, "퇴근시간은 출근시간보다 늦어야 합니다.", "INVALID_TIME_RANGE");
+      throw error;
+    }
+    const reason = String(body.reason || "").trim();
+    if (!reason) return sendError(res, 400, "추가근무 사유를 입력해 주세요.", "REASON_REQUIRED");
+      const record = {
+        id: newId("ot"),
+        userId: ctx.user.id,
+        date: calculated.date,
+        dayType: calculated.dayType,
+        checkInAt: calculated.checkInAt,
+        checkOutAt: calculated.checkOutAt,
+        checkOutDate: calculated.checkOutDate,
+        actualMinutes: calculated.actualMinutes,
+        recognizedMinutes: calculated.recognizedMinutes,
+        eligibleGrantDays: calculated.eligibleGrantDays,
+        requestedGrantDays: 0,
+        reason,
+        status: "RECORDED",
+        decisionComment: "",
+        approvedBy: null,
+        rejectedBy: null,
+      leaveAdjustmentId: null,
+      createdAt: nowIso(),
+      updatedAt: nowIso()
+    };
+    ctx.db.overtimeRecords.push(record);
+    audit(ctx.db, ctx.user.id, "OVERTIME_RECORDED", {
+        overtimeRecordId: record.id,
+        date: record.date,
+        dayType: record.dayType,
+        recognizedMinutes: record.recognizedMinutes
+      }, req);
+    writeDb(ctx.db);
+    sendJson(res, 201, { ok: true, record: { ...record, user: userSummary(ctx.db, record.userId) } });
+    return;
+  }
+
+  const overtimeGrantRequestMatch = routeMatch(pathname, /^\/api\/overtime-records\/([^/]+)\/grant-request$/);
+  if (req.method === "POST" && overtimeGrantRequestMatch) {
+    const [recordId] = overtimeGrantRequestMatch;
+    const body = await readJsonBody(req);
+    const record = ctx.db.overtimeRecords.find((item) => item.id === recordId);
+    if (!record) return sendError(res, 404, "추가근무 기록을 찾을 수 없습니다.", "NOT_FOUND");
+    if (record.userId !== ctx.user.id) return sendError(res, 403, "본인 추가근무만 요청 또는 취소할 수 있습니다.", "FORBIDDEN");
+    if (record.leaveAdjustmentId || record.status === "APPROVED") return sendError(res, 400, "이미 대체휴가가 부여된 기록은 변경할 수 없습니다.", "ALREADY_GRANTED");
+    const requestedGrantDays = Number(body.requestedGrantDays || 0);
+    if (![0, 0.5, 1].includes(requestedGrantDays)) return sendError(res, 400, "요청 값이 올바르지 않습니다.", "INVALID_REQUESTED_GRANT_DAYS");
+    if (requestedGrantDays > Number(record.eligibleGrantDays || 0)) return sendError(res, 400, "인정시간 기준으로 요청 가능한 범위를 초과했습니다.", "REQUESTED_GRANT_NOT_ELIGIBLE");
+    record.requestedGrantDays = requestedGrantDays;
+    record.approvedBy = null;
+    record.rejectedBy = null;
+    record.decisionComment = "";
+    record.status = requestedGrantDays > 0 ? "PENDING_EXECUTIVE" : "RECORDED";
+    record.updatedAt = nowIso();
+    audit(ctx.db, ctx.user.id, requestedGrantDays > 0 ? "OVERTIME_GRANT_REQUESTED" : "OVERTIME_GRANT_CANCELED", {
+      overtimeRecordId: record.id,
+      requestedGrantDays
+    }, req);
+    writeDb(ctx.db);
+    sendJson(res, 200, { ok: true, record: { ...record, user: userSummary(ctx.db, record.userId) } });
+    return;
+  }
+
+  const overtimeActionMatch = routeMatch(pathname, /^\/api\/overtime-records\/([^/]+)\/(approve|reject)$/);
+  if (req.method === "POST" && overtimeActionMatch) {
+    if (!requireExecutive(ctx, res)) return;
+    const [recordId, action] = overtimeActionMatch;
+    const body = await readJsonBody(req);
+    const record = ctx.db.overtimeRecords.find((item) => item.id === recordId);
+    if (!record) return sendError(res, 404, "추가근무 기록을 찾을 수 없습니다.", "NOT_FOUND");
+    if (record.status !== "PENDING_EXECUTIVE") return sendError(res, 400, "승인 대기 상태의 추가근무만 처리할 수 있습니다.", "ALREADY_PROCESSED");
+    if (action === "approve") {
+      if (!(record.requestedGrantDays > 0)) return sendError(res, 400, "요청된 대체휴가가 없습니다.", "NO_REQUESTED_GRANT");
+      const year = Number(String(record.date).slice(0, 4));
+      const adjustment = {
+        id: newId("leaveadj"),
+        userId: record.userId,
+        year,
+        days: Number(record.requestedGrantDays),
+        kind: "COMPENSATORY",
+        reason: `추가근무 승인 자동부여 (${record.date})`,
+        createdBy: ctx.user.id,
+        createdAt: nowIso(),
+        sourceOvertimeRecordId: record.id
+      };
+      ctx.db.leaveAdjustments.push(adjustment);
+      record.status = "APPROVED";
+      record.decisionComment = String(body.comment || "").trim();
+      record.approvedBy = ctx.user.id;
+      record.leaveAdjustmentId = adjustment.id;
+      record.updatedAt = nowIso();
+      audit(ctx.db, ctx.user.id, "OVERTIME_APPROVED", {
+        overtimeRecordId: record.id,
+        leaveAdjustmentId: adjustment.id,
+        grantedDays: record.requestedGrantDays
+      }, req);
+    } else {
+      record.status = "REJECTED";
+      record.decisionComment = String(body.comment || "").trim();
+      record.rejectedBy = ctx.user.id;
+      record.updatedAt = nowIso();
+      audit(ctx.db, ctx.user.id, "OVERTIME_REJECTED", { overtimeRecordId: record.id }, req);
+    }
+    writeDb(ctx.db);
+    sendJson(res, 200, { ok: true, record: { ...record, user: userSummary(ctx.db, record.userId) } });
+    return;
+  }
+
   if (req.method === "GET" && pathname === "/api/leave-balances") {
     const year = Number(searchParams.get("year") || localDate().slice(0, 4));
     const requestedUserId = searchParams.get("userId");
@@ -1075,6 +1350,35 @@ async function handleApi(req, res, pathname, searchParams) {
     audit(ctx.db, ctx.user.id, kind === "COMPENSATORY" ? "COMPENSATORY_LEAVE_GRANTED" : "LEAVE_BALANCE_ADJUSTED", { targetUserId: target.id, year, days, kind, reason }, req);
     writeDb(ctx.db);
     sendJson(res, 201, { ok: true, adjustment });
+    return;
+  }
+
+  const leaveAdjustmentMatch = routeMatch(pathname, /^\/api\/leave-adjustments\/([^/]+)$/);
+  if (req.method === "DELETE" && leaveAdjustmentMatch) {
+    if (!requireExecutive(ctx, res)) return;
+    const [adjustmentId] = leaveAdjustmentMatch;
+    const adjustment = ctx.db.leaveAdjustments.find((item) => item.id === adjustmentId);
+    if (!adjustment) return sendError(res, 404, "휴가 조정 이력을 찾을 수 없습니다.", "NOT_FOUND");
+    const remainingAdjustments = ctx.db.leaveAdjustments.filter((item) => item.id !== adjustmentId);
+    const tempDb = { ...ctx.db, leaveAdjustments: remainingAdjustments };
+    const balance = getLeaveBalance(tempDb, adjustment.userId, adjustment.year);
+    if (adjustment.kind === "COMPENSATORY" && balance.compensatoryRemaining < 0) {
+      return sendError(res, 400, "이미 사용한 대체휴가보다 더 많이 회수할 수 없습니다.", "INSUFFICIENT_COMPENSATORY_BALANCE");
+    }
+    if ((adjustment.kind || "ANNUAL") === "ANNUAL" && balance.annualRemaining < 0) {
+      return sendError(res, 400, "이미 사용한 연차보다 더 많이 회수할 수 없습니다.", "INSUFFICIENT_ANNUAL_BALANCE");
+    }
+    ctx.db.leaveAdjustments = remainingAdjustments;
+    audit(ctx.db, ctx.user.id, "LEAVE_ADJUSTMENT_DELETED", {
+      adjustmentId,
+      targetUserId: adjustment.userId,
+      year: adjustment.year,
+      days: adjustment.days,
+      kind: adjustment.kind,
+      reason: adjustment.reason
+    }, req);
+    writeDb(ctx.db);
+    sendJson(res, 200, { ok: true });
     return;
   }
 
