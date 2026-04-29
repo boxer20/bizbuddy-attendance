@@ -54,6 +54,18 @@ const state = {
   attendanceRequestMonth: today().slice(5, 7),
   attendanceRequestStatus: "",
   selectedUserId: "",
+  leaveFilters: {
+    from: `${today().slice(0, 7)}-01`,
+    to: today(),
+    userId: "",
+    status: ""
+  },
+  leaveManageFilters: {
+    from: `${today().slice(0, 4)}-01-01`,
+    to: today(),
+    userId: "",
+    kind: ""
+  },
   leaveYear: today().slice(0, 4)
 };
 
@@ -249,9 +261,30 @@ function dateRange(startDate, endDate) {
 }
 
 function leaveRequestsForDate(date) {
-  return state.leaveRequests.filter((item) => {
+  return filteredLeaveRequests().filter((item) => {
     if (item.status === "CANCELED") return false;
     return dateRange(item.startDate, item.endDate).includes(date);
+  });
+}
+
+function filteredLeaveRequests() {
+  return state.leaveRequests.filter((item) => {
+    if (state.leaveFilters.userId && item.userId !== state.leaveFilters.userId) return false;
+    if (state.leaveFilters.status && item.status !== state.leaveFilters.status) return false;
+    if (state.leaveFilters.from && item.endDate < state.leaveFilters.from) return false;
+    if (state.leaveFilters.to && item.startDate > state.leaveFilters.to) return false;
+    return true;
+  });
+}
+
+function filteredLeaveAdjustments() {
+  return state.leaveAdjustments.filter((item) => {
+    if (state.leaveManageFilters.userId && item.userId !== state.leaveManageFilters.userId) return false;
+    if (state.leaveManageFilters.kind && item.kind !== state.leaveManageFilters.kind) return false;
+    const createdDate = String(item.createdAt || "").slice(0, 10);
+    if (state.leaveManageFilters.from && createdDate < state.leaveManageFilters.from) return false;
+    if (state.leaveManageFilters.to && createdDate > state.leaveManageFilters.to) return false;
+    return true;
   });
 }
 
@@ -274,10 +307,14 @@ function menuGroups() {
     {
       title: "\ud734\uac00\uad00\ub9ac",
       items: [
-        { key: "leave", label: "\ud734\uac00 \ud604\ud669" }
+        { key: "leave", label: "\ud734\uac00 \uc2e0\uccad/\ub0b4\uc5ed" }
       ]
     }
   ];
+
+  if (isExecutive()) {
+    groups[2].items.push({ key: "leaveManage", label: "\ub300\uccb4\ud734\uac00/\uc870\uc815 \uad00\ub9ac" });
+  }
 
   if (isExecutive() || isTeamLead()) {
     groups[2].items.push({ key: "approvals", label: "\uc2b9\uc778\uad00\ub9ac" });
@@ -337,7 +374,7 @@ function appFrame(title, description, content) {
       <main class="main">
         <header class="topbar">
           <div class="page-title">
-            <span class="page-kicker">BIZBUDDY OFFICE</span>
+            <span class="page-kicker">BIZBUDDY</span>
             <h1>${esc(title)}</h1>
             <p>${esc(description)}</p>
           </div>
@@ -359,11 +396,20 @@ function summaryItem(label, value, extraClass = "") {
 }
 
 function dashboardPage() {
+  const attendanceTargets = state.users.filter((user) => isAttendanceTarget(user));
   const myBalance = state.leaveBalances.find((item) => item.userId === state.me.id);
   const myNumbers = myBalance ? balanceNumbers(myBalance) : null;
   const myRecords = state.attendance.filter((item) => item.userId === state.me.id);
   const todayRecord = myRecords.find((item) => item.date === today());
   const mySummary = attendanceSummary(myRecords);
+  const orgRecords = state.attendance.filter((item) => isAttendanceTarget(item.user));
+  const orgSummary = attendanceSummary(orgRecords);
+  const orgLeaveNumbers = state.leaveBalances
+    .map((item) => balanceNumbers(item))
+    .reduce((acc, item) => ({
+      used: acc.used + item.used,
+      remaining: acc.remaining + item.remaining
+    }), { used: 0, remaining: 0 });
   const pendingLeaveApprovals = state.leaveRequests.filter((item) => {
     if (item.status === "PENDING_EXECUTIVE" && isExecutive()) return true;
     if (item.status === "PENDING_TEAM_LEAD" && isTeamLead() && item.user?.teamId === state.me.teamId) return true;
@@ -379,21 +425,21 @@ function dashboardPage() {
     `
       <section class="summary-band">
         <div class="summary-title">
-          <h2>${esc(state.me?.name || "")}\ub2d8\uc758 \uc624\ub298</h2>
-          <p>${esc(T.role[state.me?.role] || state.me?.role || "")} 쨌 ${esc(userTeamLabel(state.me))}</p>
+          <h2>${isExecutive() ? `${esc(state.leaveYear)}\ub144 \uc804\uccb4 \ud604\ud669 \uc694\uc57d` : `${esc(state.me?.name || "")}\ub2d8\uc758 \uc624\ub298`}</h2>
+          <p>${esc(T.role[state.me?.role] || state.me?.role || "")} / ${esc(userTeamLabel(state.me))}</p>
         </div>
         <div class="summary-grid">
           ${isExecutive()
-            ? summaryItem("\ucd9c\ud1f4\uadfc \ub300\uc0c1", "\ub300\uc0c1\uc544\ub2d8", "is-muted")
+            ? summaryItem("\ucd9c\ud1f4\uadfc \ub300\uc0c1", `${attendanceTargets.length}\uba85`)
             : summaryItem("\uc624\ub298 \ucd9c\uadfc", todayRecord?.checkInAt ? esc(formatTime(todayRecord.checkInAt)) : "-")}
           ${isExecutive()
-            ? summaryItem("\uc815\uc0c1\ucd9c\uadfc", "\ub300\uc0c1\uc544\ub2d8", "is-muted")
+            ? summaryItem("\uc815\uc0c1\ucd9c\uadfc", `${orgSummary.normal}\uac74`)
             : summaryItem("\ucd9c\uadfc \uc0c1\ud0dc", todayRecord?.checkInAt ? esc(attendanceBadgeText(todayRecord)) : "\ubbf8\uccb4\ud06c")}
           ${isExecutive()
-            ? summaryItem("\ubbf8\ud1f4\uadfc", "\ub300\uc0c1\uc544\ub2d8", "is-muted")
+            ? summaryItem("\uc9c0\uac01 / \ubbf8\ud1f4\uadfc", `${orgSummary.late}\uac74 / ${orgSummary.notCheckedOut}\uac74`, orgSummary.late || orgSummary.notCheckedOut ? "danger-value" : "")
             : summaryItem("\uc624\ub298 \ud1f4\uadfc", todayRecord?.checkOutAt ? esc(formatTime(todayRecord.checkOutAt)) : "-")}
-          ${summaryItem("\ub0a8\uc740 \uc5f0\ucc28", myNumbers ? `${myNumbers.remaining}\uc77c` : "-")}
-          ${summaryItem("\ud734\uac00 \ucd1d\uc0ac\uc6a9", myNumbers ? `${myNumbers.used}\uc77c` : "-")}
+          ${summaryItem("\ub0a8\uc740 \uc5f0\ucc28", isExecutive() ? `${orgLeaveNumbers.remaining}\uc77c` : (myNumbers ? `${myNumbers.remaining}\uc77c` : "-"))}
+          ${summaryItem("\ud734\uac00 \ucd1d\uc0ac\uc6a9", isExecutive() ? `${orgLeaveNumbers.used}\uc77c` : (myNumbers ? `${myNumbers.used}\uc77c` : "-"))}
           ${summaryItem("\ud734\uac00 \uc2b9\uc778 \ub300\uae30", `${pendingLeaveApprovals.length}\uac74`, pendingLeaveApprovals.length ? "danger-value" : "")}
           ${summaryItem("\uadfc\ud0dc \uc2b9\uc778 \ub300\uae30", `${pendingAttendanceApprovals.length}\uac74`, pendingAttendanceApprovals.length ? "danger-value" : "")}
         </div>
@@ -401,39 +447,44 @@ function dashboardPage() {
       ${(pendingLeaveApprovals.length || pendingAttendanceApprovals.length) ? `
         <section class="notice warn">
           ${pendingLeaveApprovals.length ? `\ud734\uac00 \uc2b9\uc778 \ub300\uae30 ${pendingLeaveApprovals.length}\uac74` : ""}
-          ${pendingLeaveApprovals.length && pendingAttendanceApprovals.length ? " 쨌 " : ""}
+          ${pendingLeaveApprovals.length && pendingAttendanceApprovals.length ? " / " : ""}
           ${pendingAttendanceApprovals.length ? `\uadfc\ud0dc \uc2b9\uc778 \ub300\uae30 ${pendingAttendanceApprovals.length}\uac74` : ""}
         </section>
       ` : ""}
-      <section class="grid two">
-        <div class="surface">
+      <section class="surface">
+        <div class="actions" style="justify-content: space-between;">
+          <h3>${esc(state.leaveYear)}\ub144 \ud734\uac00 \ud604\ud669</h3>
+          ${isExecutive() ? `<button class="secondary" type="button" data-action="switch-tab" data-tab="leave">\uc0c1\uc138\ubcf4\uae30</button>` : `<button type="button" data-action="open-leave-request">\ud734\uac00 \uc2e0\uccad</button>`}
+        </div>
+        ${leaveBalanceTable(isExecutive() ? state.leaveBalances : state.leaveBalances.filter((item) => item.userId === state.me.id))}
+      </section>
+      <section class="surface">
           <div class="actions" style="justify-content: space-between;">
-            <h3>${isExecutive() ? "\ucd9c\ud1f4\uadfc \uc548\ub0b4" : "\uc624\ub298 \uadfc\ud0dc"}</h3>
+            <h3>${isExecutive() ? `${esc(state.leaveYear)}\ub144 \uadfc\ud0dc \ud604\ud669` : "\uc624\ub298 \uadfc\ud0dc"}</h3>
             ${isExecutive() ? "" : `<div class="actions"><button type="button" data-action="check-in">\ucd9c\uadfc \uccb4\ud06c</button><button class="secondary" type="button" data-action="check-out">\ud1f4\uadfc \uccb4\ud06c</button></div>`}
           </div>
           ${isExecutive()
-            ? `<div class="empty">\uad00\ub9ac\uc790 \uacc4\uc815\uc740 \ucd9c\ud1f4\uadfc \uae30\ub85d \ub300\uc0c1\uc774 \uc544\ub2d9\ub2c8\ub2e4.</div>`
+            ? `
+              <div class="summary-grid summary-grid-attendance dashboard-metric-grid" style="margin-bottom:14px;">
+                ${summaryItem("\uc815\uc0c1\ucd9c\uadfc", `${orgSummary.normal}\uac74`)}
+                ${summaryItem("\uc9c0\uac01", `${orgSummary.late}\uac74`, "danger-value")}
+                ${summaryItem("\ubbf8\ud1f4\uadfc", `${orgSummary.notCheckedOut}\uac74`)}
+              </div>
+              ${attendanceTable(orgRecords.slice(0, 10), false)}
+            `
             : `
-              <div class="summary-grid summary-grid-attendance" style="margin-bottom:14px;">
+              <div class="summary-grid summary-grid-attendance dashboard-metric-grid" style="margin-bottom:14px;">
                 ${summaryItem("\uc815\uc0c1\ucd9c\uadfc", `${mySummary.normal}\uac74`)}
                 ${summaryItem("\uc9c0\uac01", `${mySummary.late}\uac74`, "danger-value")}
                 ${summaryItem("\ubbf8\ud1f4\uadfc", `${mySummary.notCheckedOut}\uac74`)}
               </div>
               ${attendanceTable(myRecords.slice(0, 5), false)}
             `}
-        </div>
-        <div class="surface">
-          <div class="actions" style="justify-content: space-between;">
-            <h3>${esc(state.leaveYear)}\ub144 \ud734\uac00 \ud604\ud669</h3>
-            ${isExecutive() ? `<button class="secondary" type="button" data-action="switch-tab" data-tab="leave">\uc0c1\uc138\ubcf4\uae30</button>` : `<button type="button" data-action="open-leave-request">\ud734\uac00 \uc2e0\uccad</button>`}
-          </div>
-          ${leaveBalanceTable(state.leaveBalances.filter((item) => item.userId === state.me.id))}
-        </div>
       </section>
-      <section class="grid two">
+      <section class="grid two dashboard-grid">
         <div class="surface">
           <h3>\ucd5c\uadfc \ud734\uac00 \ub0b4\uc5ed</h3>
-          ${leaveRequestsTable(state.leaveRequests.filter((item) => item.userId === state.me.id).slice(0, 5), false)}
+          ${leaveRequestsTable((isExecutive() ? state.leaveRequests : state.leaveRequests.filter((item) => item.userId === state.me.id)).slice(0, 5), false)}
         </div>
         <div class="surface">
           <h3>${canDashboardQueueTitle()}</h3>
@@ -751,8 +802,9 @@ function leaveApprovalButtons(item) {
 }
 
 function leavePage() {
+  const requests = filteredLeaveRequests();
   return appFrame(
-    "\ud734\uac00\uad00\ub9ac",
+    "\ud734\uac00 \uc2e0\uccad/\ub0b4\uc5ed",
     "\ud734\uac00 \uc794\uc5ec, \uc2e0\uccad, \ubd80\uc5ec/\uc870\uc815 \ud604\ud669\uc744 \ud655\uc778\ud569\ub2c8\ub2e4.",
     `
       <section class="surface">
@@ -768,12 +820,27 @@ function leavePage() {
         </div>
         ${leaveBalanceTable(state.leaveBalances)}
       </section>
-      ${isExecutive() ? `
-        <section class="surface">
-          <h3>\ud734\uac00 \ubd80\uc5ec/\uc870\uc815 \uc774\ub825</h3>
-          ${leaveAdjustmentTable()}
-        </section>
-      ` : ""}
+      <section class="surface">
+        <form id="leave-filter-form" class="filters">
+          <label>\uc2dc\uc791\uc77c<input type="date" name="from" value="${esc(state.leaveFilters.from)}"></label>
+          <label>\uc885\ub8cc\uc77c<input type="date" name="to" value="${esc(state.leaveFilters.to)}"></label>
+          ${(isExecutive() || isTeamLead()) ? `
+            <label>\uc0ac\uc6a9\uc790
+              <select name="userId">
+                <option value="">\uc804\uccb4</option>
+                ${state.users.map((user) => `<option value="${esc(user.id)}" ${state.leaveFilters.userId === user.id ? "selected" : ""}>${esc(user.name)} (${esc(T.role[user.role] || user.role)})</option>`).join("")}
+              </select>
+            </label>
+          ` : ""}
+          <label>\uc0c1\ud0dc
+            <select name="status">
+              <option value="">\uc804\uccb4</option>
+              ${Object.entries(T.requestStatus).map(([key, label]) => `<option value="${esc(key)}" ${state.leaveFilters.status === key ? "selected" : ""}>${esc(label)}</option>`).join("")}
+            </select>
+          </label>
+          <button type="submit">\uc870\ud68c</button>
+        </form>
+      </section>
       <section class="surface">
         <div class="actions" style="justify-content: space-between;">
           <h3>\ud734\uac00 \uc2e0\uccad \ub0b4\uc5ed</h3>
@@ -782,7 +849,7 @@ function leavePage() {
             <button class="${state.leaveViewMode === "calendar" ? "secondary" : "ghost"}" type="button" data-action="leave-view" data-view="calendar">\uce98\ub9b0\ub354</button>
           </div>
         </div>
-        ${state.leaveViewMode === "calendar" ? leaveCalendar() : leaveRequestsTable(state.leaveRequests, false)}
+        ${state.leaveViewMode === "calendar" ? leaveCalendar() : leaveRequestsTable(requests, false)}
       </section>
     `
   );
@@ -833,13 +900,14 @@ function leaveCalendar() {
 }
 
 function leaveAdjustmentTable() {
-  if (!state.leaveAdjustments.length) return `<div class="empty">\ud734\uac00 \ubd80\uc5ec/\uc870\uc815 \uc774\ub825\uc774 \uc5c6\uc2b5\ub2c8\ub2e4.</div>`;
+  const adjustments = filteredLeaveAdjustments();
+  if (!adjustments.length) return `<div class="empty">\ud734\uac00 \ubd80\uc5ec/\uc870\uc815 \uc774\ub825\uc774 \uc5c6\uc2b5\ub2c8\ub2e4.</div>`;
   return `
     <div class="table-wrap">
       <table>
         <thead><tr><th>\ub4f1\ub85d\uc77c\uc2dc</th><th>\uc9c1\uc6d0</th><th>\uad6c\ubd84</th><th>\uc77c\uc218</th><th>\uc0ac\uc720</th></tr></thead>
         <tbody>
-          ${state.leaveAdjustments.map((item) => `
+          ${adjustments.map((item) => `
             <tr>
               <td>${esc(formatDateTime(item.createdAt))}</td>
               <td>${esc(item.user?.name || "-")}</td>
@@ -852,6 +920,49 @@ function leaveAdjustmentTable() {
       </table>
     </div>
   `;
+}
+
+function leaveManagePage() {
+  return appFrame(
+    "\ub300\uccb4\ud734\uac00/\uc870\uc815 \uad00\ub9ac",
+    "\uc778\uc6d0\ubcc4 \ubd80\uc5ec\uc640 \uc870\uc815 \uc774\ub825\uc744 \ud655\uc778\ud569\ub2c8\ub2e4.",
+    `
+      <section class="surface">
+        <div class="actions" style="justify-content: space-between;">
+          <div>
+            <h3>${esc(state.leaveYear)}\ub144 \uc778\uc6d0\ubcc4 \ud604\ud669</h3>
+            <p class="muted">\ub300\uccb4\ud734\uac00 \ubd80\uc5ec\uc640 \uc5f0\ucc28 \uc870\uc815\uc744 \uad00\ub9ac\ud569\ub2c8\ub2e4.</p>
+          </div>
+          <button type="button" data-action="open-leave-adjust">\ud734\uac00 \ubd80\uc5ec/\uc870\uc815</button>
+        </div>
+        ${leaveBalanceTable(state.leaveBalances)}
+      </section>
+      <section class="surface">
+        <form id="leave-manage-filter-form" class="filters">
+          <label>\uc2dc\uc791\uc77c<input type="date" name="from" value="${esc(state.leaveManageFilters.from)}"></label>
+          <label>\uc885\ub8cc\uc77c<input type="date" name="to" value="${esc(state.leaveManageFilters.to)}"></label>
+          <label>\uc0ac\uc6a9\uc790
+            <select name="userId">
+              <option value="">\uc804\uccb4</option>
+              ${state.users.map((user) => `<option value="${esc(user.id)}" ${state.leaveManageFilters.userId === user.id ? "selected" : ""}>${esc(user.name)} (${esc(T.role[user.role] || user.role)})</option>`).join("")}
+            </select>
+          </label>
+          <label>\uad6c\ubd84
+            <select name="kind">
+              <option value="">\uc804\uccb4</option>
+              <option value="ANNUAL" ${state.leaveManageFilters.kind === "ANNUAL" ? "selected" : ""}>\uc5f0\ucc28 \uc870\uc815</option>
+              <option value="COMPENSATORY" ${state.leaveManageFilters.kind === "COMPENSATORY" ? "selected" : ""}>\ub300\uccb4\ud734\uac00 \ubd80\uc5ec</option>
+            </select>
+          </label>
+          <button type="submit">\uc870\ud68c</button>
+        </form>
+      </section>
+      <section class="surface">
+        <h3>\ud734\uac00 \ubd80\uc5ec/\uc870\uc815 \uc774\ub825</h3>
+        ${leaveAdjustmentTable()}
+      </section>
+    `
+  );
 }
 
 function approvalsPage() {
@@ -1217,6 +1328,7 @@ function renderApp() {
   else if (state.tab === "attendance") html = attendancePage();
   else if (state.tab === "attendanceRequests") html = attendanceRequestsPage();
   else if (state.tab === "leave") html = leavePage();
+  else if (state.tab === "leaveManage") html = leaveManagePage();
   else if (state.tab === "approvals") html = approvalsPage();
   else if (state.tab === "mypage") html = myPagePage();
   else if (state.tab === "users") html = usersPage();
@@ -1326,7 +1438,7 @@ function openAttendanceRequestModal(recordId) {
   openModal(`
     <section class="modal-panel">
       <div class="modal-head">
-        <div><h2>\uadfc\ud0dc \uc218\uc815\uc694\uccad</h2><p>${esc(record.date)} 쨌 ${esc(record.user?.name || "")}</p></div>
+        <div><h2>\uadfc\ud0dc \uc218\uc815\uc694\uccad</h2><p>${esc(record.date)} / ${esc(record.user?.name || "")}</p></div>
         <button class="secondary" type="button" data-action="close-modal">\ub2eb\uae30</button>
       </div>
       <form id="attendance-request-form" class="form-grid">
@@ -1386,7 +1498,7 @@ function openDirectAdjustModal(recordId) {
   openModal(`
     <section class="modal-panel">
       <div class="modal-head">
-        <div><h2>\uadfc\ud0dc \uc9c1\uc811 \uc218\uc815</h2><p>${esc(record.user?.name || "")} 쨌 ${esc(record.date)}</p></div>
+        <div><h2>\uadfc\ud0dc \uc9c1\uc811 \uc218\uc815</h2><p>${esc(record.user?.name || "")} / ${esc(record.date)}</p></div>
         <button class="secondary" type="button" data-action="close-modal">\ub2eb\uae30</button>
       </div>
       <form id="direct-adjust-form" class="form-grid">
@@ -1833,6 +1945,22 @@ document.addEventListener("submit", async (event) => {
       state.attendanceRequestYear = data.year || today().slice(0, 4);
       state.attendanceRequestMonth = data.month || "";
       state.attendanceRequestStatus = data.status || "";
+      renderApp();
+      return;
+    }
+    if (form.id === "leave-filter-form") {
+      state.leaveFilters.from = data.from || "";
+      state.leaveFilters.to = data.to || "";
+      state.leaveFilters.userId = data.userId || "";
+      state.leaveFilters.status = data.status || "";
+      renderApp();
+      return;
+    }
+    if (form.id === "leave-manage-filter-form") {
+      state.leaveManageFilters.from = data.from || "";
+      state.leaveManageFilters.to = data.to || "";
+      state.leaveManageFilters.userId = data.userId || "";
+      state.leaveManageFilters.kind = data.kind || "";
       renderApp();
       return;
     }
