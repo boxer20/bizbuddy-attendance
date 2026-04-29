@@ -276,6 +276,21 @@ function isAttendanceTarget(user) {
   return user && user.role !== "EXECUTIVE";
 }
 
+function activeTeamLeadForUser(db, user) {
+  if (!user || !user.teamId) return null;
+  return db.users.find((item) => (
+    item.role === "TEAM_LEAD" &&
+    item.status === "ACTIVE" &&
+    item.teamId === user.teamId &&
+    item.id !== user.id
+  )) || null;
+}
+
+function initialApprovalStatus(db, user) {
+  if (isExecutive(user)) return "APPROVED";
+  return activeTeamLeadForUser(db, user) ? "PENDING_TEAM_LEAD" : "PENDING_EXECUTIVE";
+}
+
 function resolveUserTeamId(db, role, teamId) {
   if (role === "EXECUTIVE") return null;
   const normalized = teamId || null;
@@ -1046,9 +1061,9 @@ async function handleApi(req, res, pathname, searchParams) {
 
   if (req.method === "GET" && pathname === "/api/attendance-change-requests") {
     const status = searchParams.get("status");
-    let requests = isExecutive(ctx.user)
-      ? ctx.db.attendanceChangeRequests
-      : ctx.db.attendanceChangeRequests.filter((request) => request.userId === ctx.user.id);
+    const scopedIds = scopedUsers(ctx.db, ctx.user).map((item) => item.id);
+    let requests = ctx.db.attendanceChangeRequests.filter((request) => scopedIds.includes(request.userId));
+    if (ctx.user.role === "EMPLOYEE") requests = requests.filter((request) => request.userId === ctx.user.id);
     if (status) requests = requests.filter((request) => request.status === status);
     requests = requests.sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map((request) => ({ ...request, user: userSummary(ctx.db, request.userId) }));
     writeDb(ctx.db);
@@ -1075,7 +1090,7 @@ async function handleApi(req, res, pathname, searchParams) {
       proposedCheckInAt,
       proposedCheckOutAt,
       reason,
-      status: "PENDING_EXECUTIVE",
+      status: initialApprovalStatus(ctx.db, ctx.user),
       teamLeadId: null,
       executiveId: null,
       teamLeadComment: "",
@@ -1097,7 +1112,6 @@ async function handleApi(req, res, pathname, searchParams) {
 
   const attendanceRequestActionMatch = routeMatch(pathname, /^\/api\/attendance-change-requests\/([^/]+)\/(approve|reject)$/);
   if (req.method === "POST" && attendanceRequestActionMatch) {
-    if (!requireExecutive(ctx, res)) return;
     const [requestId, action] = attendanceRequestActionMatch;
     const body = await readJsonBody(req);
     const request = ctx.db.attendanceChangeRequests.find((item) => item.id === requestId);
@@ -1106,16 +1120,32 @@ async function handleApi(req, res, pathname, searchParams) {
     if (!target) return sendError(res, 404, "직원을 찾을 수 없습니다.", "NOT_FOUND");
     if (!PENDING.includes(request.status)) return sendError(res, 400, "이미 처리된 요청입니다.", "ALREADY_PROCESSED");
     if (action === "approve") {
-      request.status = "APPROVED";
-      request.executiveId = ctx.user.id;
-      request.executiveComment = String(body.comment || "").trim();
-      request.updatedAt = nowIso();
-      applyAttendanceChange(ctx.db, request, ctx.user, "REQUEST_APPROVED");
-      audit(ctx.db, ctx.user.id, "ATTENDANCE_CHANGE_EXECUTIVE_APPROVED", { requestId }, req);
+      if (request.status === "PENDING_TEAM_LEAD" && isTeamLead(ctx.user) && ctx.user.teamId === target.teamId) {
+        request.status = "PENDING_EXECUTIVE";
+        request.teamLeadId = ctx.user.id;
+        request.teamLeadComment = String(body.comment || "").trim();
+        request.updatedAt = nowIso();
+        audit(ctx.db, ctx.user.id, "ATTENDANCE_CHANGE_TEAM_APPROVED", { requestId }, req);
+      } else if (isExecutive(ctx.user)) {
+        request.status = "APPROVED";
+        request.executiveId = ctx.user.id;
+        request.executiveComment = String(body.comment || "").trim();
+        request.updatedAt = nowIso();
+        applyAttendanceChange(ctx.db, request, ctx.user, "REQUEST_APPROVED");
+        audit(ctx.db, ctx.user.id, "ATTENDANCE_CHANGE_EXECUTIVE_APPROVED", { requestId }, req);
+      } else {
+        return sendError(res, 403, "승인 권한이 없습니다.", "FORBIDDEN");
+      }
     } else {
+      if (!((request.status === "PENDING_TEAM_LEAD" && isTeamLead(ctx.user) && ctx.user.teamId === target.teamId) || isExecutive(ctx.user))) return sendError(res, 403, "반려 권한이 없습니다.", "FORBIDDEN");
       request.status = "REJECTED";
-      request.executiveId = ctx.user.id;
-      request.executiveComment = String(body.comment || "").trim();
+      if (isExecutive(ctx.user)) {
+        request.executiveId = ctx.user.id;
+        request.executiveComment = String(body.comment || "").trim();
+      } else {
+        request.teamLeadId = ctx.user.id;
+        request.teamLeadComment = String(body.comment || "").trim();
+      }
       request.updatedAt = nowIso();
       audit(ctx.db, ctx.user.id, "ATTENDANCE_CHANGE_REJECTED", { requestId }, req);
     }
@@ -1245,10 +1275,12 @@ async function handleApi(req, res, pathname, searchParams) {
     if (![0, 0.5, 1].includes(requestedGrantDays)) return sendError(res, 400, "요청 값이 올바르지 않습니다.", "INVALID_REQUESTED_GRANT_DAYS");
     if (requestedGrantDays > Number(record.eligibleGrantDays || 0)) return sendError(res, 400, "인정시간 기준으로 요청 가능한 범위를 초과했습니다.", "REQUESTED_GRANT_NOT_ELIGIBLE");
     record.requestedGrantDays = requestedGrantDays;
+    record.teamLeadId = null;
+    record.teamLeadComment = "";
     record.approvedBy = null;
     record.rejectedBy = null;
     record.decisionComment = "";
-    record.status = requestedGrantDays > 0 ? "PENDING_EXECUTIVE" : "RECORDED";
+    record.status = requestedGrantDays > 0 ? initialApprovalStatus(ctx.db, ctx.user) : "RECORDED";
     record.updatedAt = nowIso();
     audit(ctx.db, ctx.user.id, requestedGrantDays > 0 ? "OVERTIME_GRANT_REQUESTED" : "OVERTIME_GRANT_CANCELED", {
       overtimeRecordId: record.id,
@@ -1261,14 +1293,26 @@ async function handleApi(req, res, pathname, searchParams) {
 
   const overtimeActionMatch = routeMatch(pathname, /^\/api\/overtime-records\/([^/]+)\/(approve|reject)$/);
   if (req.method === "POST" && overtimeActionMatch) {
-    if (!requireExecutive(ctx, res)) return;
     const [recordId, action] = overtimeActionMatch;
     const body = await readJsonBody(req);
     const record = ctx.db.overtimeRecords.find((item) => item.id === recordId);
     if (!record) return sendError(res, 404, "추가근무 기록을 찾을 수 없습니다.", "NOT_FOUND");
-    if (record.status !== "PENDING_EXECUTIVE") return sendError(res, 400, "승인 대기 상태의 추가근무만 처리할 수 있습니다.", "ALREADY_PROCESSED");
+    const target = ctx.db.users.find((item) => item.id === record.userId);
+    if (!target) return sendError(res, 404, "직원을 찾을 수 없습니다.", "NOT_FOUND");
+    if (!PENDING.includes(record.status)) return sendError(res, 400, "승인 대기 상태의 추가근무만 처리할 수 있습니다.", "ALREADY_PROCESSED");
     if (action === "approve") {
       if (!(record.requestedGrantDays > 0)) return sendError(res, 400, "요청된 대체휴가가 없습니다.", "NO_REQUESTED_GRANT");
+      if (record.status === "PENDING_TEAM_LEAD" && isTeamLead(ctx.user) && ctx.user.teamId === target.teamId) {
+        record.status = "PENDING_EXECUTIVE";
+        record.teamLeadId = ctx.user.id;
+        record.teamLeadComment = String(body.comment || "").trim();
+        record.updatedAt = nowIso();
+        audit(ctx.db, ctx.user.id, "OVERTIME_TEAM_APPROVED", { overtimeRecordId: record.id }, req);
+        writeDb(ctx.db);
+        sendJson(res, 200, { ok: true, record: { ...record, user: userSummary(ctx.db, record.userId) } });
+        return;
+      }
+      if (!isExecutive(ctx.user)) return sendError(res, 403, "승인 권한이 없습니다.", "FORBIDDEN");
       const year = Number(String(record.date).slice(0, 4));
       const adjustment = {
         id: newId("leaveadj"),
@@ -1293,9 +1337,14 @@ async function handleApi(req, res, pathname, searchParams) {
         grantedDays: record.requestedGrantDays
       }, req);
     } else {
+      if (!((record.status === "PENDING_TEAM_LEAD" && isTeamLead(ctx.user) && ctx.user.teamId === target.teamId) || isExecutive(ctx.user))) return sendError(res, 403, "반려 권한이 없습니다.", "FORBIDDEN");
       record.status = "REJECTED";
       record.decisionComment = String(body.comment || "").trim();
-      record.rejectedBy = ctx.user.id;
+      if (isExecutive(ctx.user)) record.rejectedBy = ctx.user.id;
+      else {
+        record.teamLeadId = ctx.user.id;
+        record.teamLeadComment = String(body.comment || "").trim();
+      }
       record.updatedAt = nowIso();
       audit(ctx.db, ctx.user.id, "OVERTIME_REJECTED", { overtimeRecordId: record.id }, req);
     }
@@ -1423,7 +1472,7 @@ async function handleApi(req, res, pathname, searchParams) {
       endDate,
       days,
       reason,
-      status: ctx.user.role === "TEAM_LEAD" ? "PENDING_EXECUTIVE" : "PENDING_TEAM_LEAD",
+      status: initialApprovalStatus(ctx.db, ctx.user),
       teamLeadId: null,
       executiveId: null,
       teamLeadComment: "",

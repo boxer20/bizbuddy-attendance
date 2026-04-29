@@ -44,6 +44,7 @@ const state = {
   teams: [],
   attendance: [],
   attendanceRequests: [],
+  attendanceAdjustmentLogs: [],
   leaveBalances: [],
   leaveRequests: [],
   leaveAdjustments: [],
@@ -195,6 +196,18 @@ function formatMinutes(minutes) {
   if (!value) return "0시간";
   if (!remain) return `${hours}시간`;
   return `${hours}시간 ${remain}분`;
+}
+
+function yearRange(year) {
+  const value = String(year || today().slice(0, 4));
+  return { from: `${value}-01-01`, to: `${value}-12-31` };
+}
+
+function monthRange(month) {
+  const value = String(month || today().slice(0, 7));
+  const [year, monthNumber] = value.split("-").map(Number);
+  const last = new Date(year, monthNumber, 0).getDate();
+  return { from: `${value}-01`, to: `${value}-${String(last).padStart(2, "0")}` };
 }
 
 function teamName(teamId) {
@@ -379,7 +392,7 @@ function menuGroups() {
       items: [
         { key: "attendance", label: "\ucd9c\ud1f4\uadfc\uae30\ub85d" },
         { key: "overtime", label: "\ucd94\uac00\uadfc\ubb34 \uad00\ub9ac" },
-        { key: "attendanceRequests", label: "\uc218\uc815\uc694\uccad\ub0b4\uc5ed" }
+        { key: "attendanceRequests", label: "\uadfc\ud0dc \uc2b9\uc778\uad00\ub9ac" }
       ]
     },
     {
@@ -395,7 +408,7 @@ function menuGroups() {
   }
 
   if (isExecutive() || isTeamLead()) {
-    groups[2].items.push({ key: "approvals", label: "\uc2b9\uc778\uad00\ub9ac" });
+    groups[2].items.push({ key: "approvals", label: "\ud734\uac00 \uc2b9\uc778\uad00\ub9ac" });
   }
 
   if (isExecutive()) {
@@ -492,6 +505,9 @@ function dashboardPage() {
   const myNumbers = myBalance ? balanceNumbers(myBalance) : null;
   const myRecords = state.attendance.filter((item) => item.userId === state.me.id);
   const todayRecord = myRecords.find((item) => item.date === today());
+  const todayCheckInSummary = todayRecord?.checkInAt
+    ? `${esc(formatTime(todayRecord.checkInAt))} <span class="badge ${badgeClass(attendanceJudge(todayRecord))}">${esc(attendanceBadgeText(todayRecord))}</span>`
+    : "-";
   const mySummary = attendanceSummary(myRecords);
   const orgRecords = state.attendance.filter((item) => isAttendanceTarget(item.user));
   const orgSummary = attendanceSummary(orgRecords);
@@ -510,7 +526,10 @@ function dashboardPage() {
     if (!isExecutive()) return false;
     return item.status === "PENDING_TEAM_LEAD" || item.status === "PENDING_EXECUTIVE";
   });
-  const pendingOvertimeApprovals = state.overtimeRecords.filter((item) => isExecutive() && item.status === "PENDING_EXECUTIVE");
+  const pendingOvertimeApprovals = state.overtimeRecords.filter((item) => {
+    if (isExecutive()) return item.status === "PENDING_EXECUTIVE";
+    return item.status === "PENDING_TEAM_LEAD" && isTeamLead() && item.user?.teamId === state.me.teamId;
+  });
   return appFrame(
     "\ub300\uc2dc\ubcf4\ub4dc",
     "\uc624\ub298 \ud604\ud669\uacfc \uc8fc\uc694 \uc815\ubcf4\ub97c \ud655\uc778\ud569\ub2c8\ub2e4.",
@@ -523,10 +542,8 @@ function dashboardPage() {
         <div class="summary-grid">
           ${isExecutive()
             ? summaryItem("\ucd9c\ud1f4\uadfc \ub300\uc0c1", `${attendanceTargets.length}\uba85`)
-            : summaryItem("\uc624\ub298 \ucd9c\uadfc", todayRecord?.checkInAt ? esc(formatTime(todayRecord.checkInAt)) : "-")}
-          ${isExecutive()
-            ? summaryItem("\uc815\uc0c1\ucd9c\uadfc", `${orgSummary.normal}\uac74`)
-            : summaryItem("\ucd9c\uadfc \uc0c1\ud0dc", todayRecord?.checkInAt ? esc(attendanceBadgeText(todayRecord)) : "\ubbf8\uccb4\ud06c")}
+            : summaryItem("\uc624\ub298 \ucd9c\uadfc", todayCheckInSummary)}
+          ${isExecutive() ? summaryItem("\uc815\uc0c1\ucd9c\uadfc", `${orgSummary.normal}\uac74`) : ""}
           ${isExecutive()
             ? summaryItem("\uc9c0\uac01 / \ubbf8\ud1f4\uadfc", `${orgSummary.late}\uac74 / ${orgSummary.notCheckedOut}\uac74`, orgSummary.late || orgSummary.notCheckedOut ? "danger-value" : "")
             : summaryItem("\uc624\ub298 \ud1f4\uadfc", todayRecord?.checkOutAt ? esc(formatTime(todayRecord.checkOutAt)) : "-")}
@@ -534,7 +551,7 @@ function dashboardPage() {
           ${summaryItem("\ud734\uac00 \ucd1d\uc0ac\uc6a9", isExecutive() ? `${orgLeaveNumbers.used}\uc77c` : (myNumbers ? `${myNumbers.used}\uc77c` : "-"))}
           ${summaryItem("\ud734\uac00 \uc2b9\uc778 \ub300\uae30", `${pendingLeaveApprovals.length}\uac74`, pendingLeaveApprovals.length ? "danger-value" : "")}
           ${summaryItem("\uadfc\ud0dc \uc2b9\uc778 \ub300\uae30", `${pendingAttendanceApprovals.length}\uac74`, pendingAttendanceApprovals.length ? "danger-value" : "")}
-          ${summaryItem("\ucd94\uac00\uadfc\ubb34 \ub300\uae30", `${pendingOvertimeApprovals.length}\uac74`, pendingOvertimeApprovals.length ? "danger-value" : "")}
+          ${summaryItem("\ub300\uccb4\ud734\uac00\ubcf4\uc0c1 \ub300\uae30", `${pendingOvertimeApprovals.length}\uac74`, pendingOvertimeApprovals.length ? "danger-value" : "")}
         </div>
       </section>
       ${(pendingLeaveApprovals.length || pendingAttendanceApprovals.length || pendingOvertimeApprovals.length) ? `
@@ -543,7 +560,7 @@ function dashboardPage() {
           ${pendingLeaveApprovals.length && pendingAttendanceApprovals.length ? " / " : ""}
           ${pendingAttendanceApprovals.length ? `\uadfc\ud0dc \uc2b9\uc778 \ub300\uae30 ${pendingAttendanceApprovals.length}\uac74` : ""}
           ${(pendingLeaveApprovals.length || pendingAttendanceApprovals.length) && pendingOvertimeApprovals.length ? " / " : ""}
-          ${pendingOvertimeApprovals.length ? `\ucd94\uac00\uadfc\ubb34 \ub300\uae30 ${pendingOvertimeApprovals.length}\uac74` : ""}
+          ${pendingOvertimeApprovals.length ? `\ub300\uccb4\ud734\uac00\ubcf4\uc0c1 \ub300\uae30 ${pendingOvertimeApprovals.length}\uac74` : ""}
         </section>
       ` : ""}
       <section class="surface">
@@ -603,7 +620,8 @@ function attendanceTable(records, showActions = true) {
             <th>\ucd9c\uadfc\uc2dc\uac04 / \ud1f4\uadfc\uc2dc\uac04</th>
             <th>\uc0c1\ud0dc</th>
             <th>\ucd9c\ud1f4\uadfc \uccb4\ud06c IP</th>
-            <th>\ucc98\ub9ac</th>
+            <th>\uc218\uc815\uc774\ub825</th>
+            <th>\uc218\uc815</th>
           </tr>
         </thead>
         <tbody>
@@ -614,18 +632,30 @@ function attendanceTable(records, showActions = true) {
               : isExecutive()
                 ? `<button class="secondary" type="button" data-action="open-direct-adjust" data-record-id="${esc(record.id)}">\uc218\uc815</button>`
                 : `<button class="secondary" type="button" data-action="open-attendance-request" data-record-id="${esc(record.id)}">\uc218\uc815\uc694\uccad</button>`;
+            const hasHistory = state.attendanceAdjustmentLogs.some((log) => log.recordId === record.id);
+            const historyAction = hasHistory
+              ? `<button class="secondary" type="button" data-action="show-attendance-record-history" data-record-id="${esc(record.id)}">\uc218\uc815\uc774\ub825</button>`
+              : "\uc5c6\uc74c";
             return `
               <tr${divider}>
                 <td>${esc(record.date)}</td>
                 <td>${esc(T.role[record.user?.role] || record.user?.role || "-")}</td>
-                <td>${esc(record.user?.name || "-")}</td>
                 <td>
-                  <div>${esc(formatTime(record.checkInAt))} / ${esc(formatTime(record.checkOutAt))}</div>
-                  ${record.checkInAt ? `<div class="inline-meta"><span class="badge ${badgeClass(attendanceJudge(record))}">${esc(attendanceBadgeText(record))}</span></div>` : ""}
-                  ${(record.checkInNote || record.checkOutNote) ? `<div class="muted">\ube44\uace0: ${esc(record.checkInNote || record.checkOutNote)}</div>` : ""}
+                  <div>${esc(record.user?.name || "-")}</div>
+                  <div class="muted">${esc(userTeamLabel(record.user))}</div>
+                </td>
+                <td>
+                  <div class="attendance-time-line">\ucd9c\uadfc ${esc(formatTime(record.checkInAt))}${record.checkInAt ? ` <span class="badge ${badgeClass(attendanceJudge(record))}">${esc(attendanceBadgeText(record))}</span>` : ""}</div>
+                  ${record.checkInNote ? `<div class="muted">\ucd9c\uadfc \uba54\ubaa8: ${esc(record.checkInNote)}</div>` : ""}
+                  <div class="attendance-time-line">\ud1f4\uadfc ${esc(formatTime(record.checkOutAt))}</div>
+                  ${record.checkOutNote ? `<div class="muted">\ud1f4\uadfc \uba54\ubaa8: ${esc(record.checkOutNote)}</div>` : ""}
                 </td>
                 <td><span class="badge ${badgeClass(attendanceJudge(record))}">${esc(attendanceStatusText(record))}</span></td>
-                <td>${esc(record.checkInIp || "-")} / ${esc(record.checkOutIp || "-")}</td>
+                <td>
+                  <div>\ucd9c\uadfc ${esc(record.checkInIp || "-")}</div>
+                  <div>\ud1f4\uadfc ${esc(record.checkOutIp || "-")}</div>
+                </td>
+                <td>${historyAction}</td>
                 <td>${action}</td>
               </tr>
             `;
@@ -639,6 +669,7 @@ function attendanceTable(records, showActions = true) {
 function attendanceCalendar() {
   const days = monthDays(state.attendanceCalendarMonth);
   const weekLabels = ["\uc77c", "\uc6d4", "\ud654", "\uc218", "\ubaa9", "\uae08", "\ud1a0"];
+  const isPersonalView = !isExecutive() && !isTeamLead() && isAttendanceTarget(state.me);
   const userLabel = state.attendanceFilters.userId
     ? (state.users.find((user) => user.id === state.attendanceFilters.userId)?.name || "\uc120\ud0dd \uc0ac\uc6a9\uc790")
     : "\uc804\uccb4";
@@ -660,11 +691,33 @@ function attendanceCalendar() {
       ${weekLabels.map((label) => `<div class="calendar-weekday">${label}</div>`).join("")}
       ${days.map((day) => {
         const dayRecords = state.attendance.filter((record) => record.date === day.date);
+        const dayOvertimeRecords = state.overtimeRecords.filter((record) => record.date === day.date);
+        if (isPersonalView) {
+          const record = dayRecords.find((item) => item.userId === state.me.id);
+          const overtimeMinutes = dayOvertimeRecords
+            .filter((item) => item.userId === state.me.id)
+            .reduce((sum, item) => sum + Number(item.recognizedMinutes || 0), 0);
+          return `
+            <div class="calendar-day ${day.inMonth ? "" : "is-other-month"} ${day.date === today() ? "is-today" : ""}">
+              <header><span>${day.day}</span></header>
+              <div class="calendar-body">
+                <button class="calendar-summary-button" type="button" data-action="show-attendance-day" data-date="${esc(day.date)}">
+                  <div class="calendar-metric total"><span>\ucd9c\uadfc\uc0c1\ud0dc</span><strong>${record?.checkInAt ? esc(attendanceStatusText(record)) : "\uc5c6\uc74c"}</strong></div>
+                  <div class="calendar-metric"><span>\ucd9c\uadfc\uc2dc\uac04</span><strong>${record?.checkInAt ? esc(formatTime(record.checkInAt)) : "\uc5c6\uc74c"}</strong></div>
+                  <div class="calendar-metric"><span>\ud1f4\uadfc\uc0c1\ud0dc</span><strong>${record?.checkOutAt ? "\uc644\ub8cc" : record?.checkInAt ? "\ubbf8\ud1f4\uadfc" : "\uc5c6\uc74c"}</strong></div>
+                  <div class="calendar-metric"><span>\ud1f4\uadfc\uc2dc\uac04</span><strong>${record?.checkOutAt ? esc(formatTime(record.checkOutAt)) : "\uc5c6\uc74c"}</strong></div>
+                  <div class="calendar-metric"><span>\ucd94\uac00\uadfc\ubb34\uc2dc\uac04</span><strong>${overtimeMinutes ? esc(formatMinutes(overtimeMinutes)) : "\uc5c6\uc74c"}</strong></div>
+                </button>
+              </div>
+            </div>
+          `;
+        }
         const normal = dayRecords.filter((record) => attendanceJudge(record) === "NORMAL").length;
         const late = dayRecords.filter((record) => attendanceJudge(record) === "LATE").length;
         const notCheckedOut = dayRecords.filter((record) => record.checkInAt && !record.checkOutAt).length;
+        const overtimeUsers = new Set(dayOvertimeRecords.map((record) => record.userId)).size;
         const totalTargets = state.attendanceFilters.userId ? 1 : Math.max(0, state.users.filter((user) => isAttendanceTarget(user)).length);
-        const hasRecords = dayRecords.length > 0;
+        const hasRecords = dayRecords.length > 0 || dayOvertimeRecords.length > 0;
         return `
           <div class="calendar-day ${day.inMonth ? "" : "is-other-month"} ${day.date === today() ? "is-today" : ""}">
             <header><span>${day.day}</span></header>
@@ -675,6 +728,7 @@ function attendanceCalendar() {
                   <div class="calendar-metric"><span>\uc815\uc0c1\ucd9c\uadfc</span><strong>${normal}\uac74/${totalTargets}</strong></div>
                   <div class="calendar-metric danger"><span>\uc9c0\uac01</span><strong>${late}\uac74/${totalTargets}</strong></div>
                   <div class="calendar-metric"><span>\ubbf8\ud1f4\uadfc</span><strong>${notCheckedOut}\uac74/${totalTargets}</strong></div>
+                  <div class="calendar-metric"><span>\ucd94\uac00\uadfc\ubb34\uc790</span><strong>${overtimeUsers}\uba85</strong></div>
                 </button>
               ` : ""}
             </div>
@@ -706,6 +760,14 @@ function attendancePage() {
           ` : ""}
           <button type="submit">\uc870\ud68c</button>
         </form>
+        <div class="actions" style="margin-top:10px;">
+          <label>\uc6d4\ubcc4\uc870\ud68c<input type="month" data-period-month="attendance" value="${esc(monthValue(state.attendanceFilters.to || today()))}"></label>
+          <button class="secondary" type="button" data-action="apply-period" data-scope="attendance" data-mode="month">\uc6d4\ubcc4\uc870\ud68c</button>
+          <label>\ub144\ub3c4\ubcc4\uc870\ud68c<input type="number" data-period-year="attendance" value="${esc((state.attendanceFilters.to || today()).slice(0, 4))}" min="2020" max="2100"></label>
+          <button class="secondary" type="button" data-action="apply-period" data-scope="attendance" data-mode="year">\ub144\ub3c4\ubcc4\uc870\ud68c</button>
+          <button class="secondary" type="button" data-action="open-yearly" data-scope="attendance">\ub144\ub3c4\ubcc4 \uc804\uccb4</button>
+          <button type="button" data-action="download-yearly" data-scope="attendance">\uc5d1\uc140\ub2e4\uc6b4\ub85c\ub4dc</button>
+        </div>
       </section>
       <section class="summary-band">
         <div class="summary-grid summary-grid-attendance">
@@ -763,7 +825,7 @@ function attendanceRequestsTable() {
               <td><span class="badge ${badgeClass(item.status)}">${esc(T.requestStatus[item.status] || item.status)}</span></td>
               <td>${renderReasonButton(item.executiveComment || item.reason)}</td>
               <td>
-                ${isExecutive() && (item.status === "PENDING_TEAM_LEAD" || item.status === "PENDING_EXECUTIVE")
+                ${((item.status === "PENDING_TEAM_LEAD" && isTeamLead() && item.user?.teamId === state.me.teamId) || (item.status === "PENDING_EXECUTIVE" && isExecutive()))
                   ? `<div class="actions"><button type="button" data-action="attendance-approve" data-request-id="${esc(item.id)}">\uc2b9\uc778</button><button class="secondary" type="button" data-action="attendance-reject" data-request-id="${esc(item.id)}">\ubc18\ub824</button></div>`
                   : item.status === "APPROVED" ? `<button class="secondary" type="button" data-action="show-attendance-history" data-request-id="${esc(item.id)}">\uc218\uc815\uc774\ub825</button>` : "-"}
               </td>
@@ -777,8 +839,8 @@ function attendanceRequestsTable() {
 
 function attendanceRequestsPage() {
   return appFrame(
-    "\uc218\uc815\uc694\uccad\ub0b4\uc5ed",
-    "\uadfc\ud0dc \uc218\uc815\uc694\uccad \uacb0\uacfc\ub97c \ud655\uc778\ud569\ub2c8\ub2e4.",
+    "\uadfc\ud0dc \uc2b9\uc778\uad00\ub9ac",
+    "\uadfc\ud0dc \uc218\uc815 \uc2e0\uccad\ub0b4\uc5ed\uc744 \ud655\uc778\ud558\uace0 \uc2b9\uc778 \ucc98\ub9ac\ud569\ub2c8\ub2e4.",
     `
       <section class="surface">
         <form id="attendance-request-filter-form" class="filters">
@@ -805,7 +867,7 @@ function attendanceRequestsPage() {
         </form>
       </section>
       <section class="surface">
-        <h3>\uc218\uc815\uc694\uccad \ubaa9\ub85d</h3>
+        <h3>\uadfc\ud0dc \uc218\uc815 \uc2e0\uccad\ub0b4\uc5ed</h3>
         ${attendanceRequestsTable()}
       </section>
     `
@@ -813,7 +875,7 @@ function attendanceRequestsPage() {
 }
 
 function overtimeTable(records, approvals = false, requestActions = false) {
-  if (!records.length) return `<div class="empty">\ucd94\uac00\uadfc\ubb34 \ub0b4\uc5ed\uc774 \uc5c6\uc2b5\ub2c8\ub2e4.</div>`;
+  if (!records.length) return `<div class="empty">${approvals ? "\ub300\uccb4\ud734\uac00\ubcf4\uc0c1 \uc2e0\uccad\ub0b4\uc5ed\uc774 \uc5c6\uc2b5\ub2c8\ub2e4." : "\ucd94\uac00\uadfc\ubb34 \ub0b4\uc5ed\uc774 \uc5c6\uc2b5\ub2c8\ub2e4."}</div>`;
   return `
     <div class="table-wrap">
       <table>
@@ -855,6 +917,9 @@ function overtimeTable(records, approvals = false, requestActions = false) {
 }
 
 function overtimeApprovalButtons(item) {
+  if (item.status === "PENDING_TEAM_LEAD" && isTeamLead() && item.user?.teamId === state.me.teamId) {
+    return `<div class="actions"><button type="button" data-action="overtime-approve" data-record-id="${esc(item.id)}">\uc2b9\uc778</button><button class="secondary" type="button" data-action="overtime-reject" data-record-id="${esc(item.id)}">\ubc18\ub824</button></div>`;
+  }
   if (isExecutive() && item.status === "PENDING_EXECUTIVE") {
     return `<div class="actions"><button type="button" data-action="overtime-approve" data-record-id="${esc(item.id)}">\uc2b9\uc778</button><button class="secondary" type="button" data-action="overtime-reject" data-record-id="${esc(item.id)}">\ubc18\ub824</button></div>`;
   }
@@ -954,6 +1019,14 @@ function overtimePage() {
           </label>
           <button type="submit">\uc870\ud68c</button>
         </form>
+        <div class="actions" style="margin-top:10px;">
+          <label>\uc6d4\ubcc4\uc870\ud68c<input type="month" data-period-month="overtime" value="${esc(monthValue(state.overtimeFilters.to || today()))}"></label>
+          <button class="secondary" type="button" data-action="apply-period" data-scope="overtime" data-mode="month">\uc6d4\ubcc4\uc870\ud68c</button>
+          <label>\ub144\ub3c4\ubcc4\uc870\ud68c<input type="number" data-period-year="overtime" value="${esc((state.overtimeFilters.to || today()).slice(0, 4))}" min="2020" max="2100"></label>
+          <button class="secondary" type="button" data-action="apply-period" data-scope="overtime" data-mode="year">\ub144\ub3c4\ubcc4\uc870\ud68c</button>
+          <button class="secondary" type="button" data-action="open-yearly" data-scope="overtime">\ub144\ub3c4\ubcc4 \uc804\uccb4</button>
+          <button type="button" data-action="download-yearly" data-scope="overtime">\uc5d1\uc140\ub2e4\uc6b4\ub85c\ub4dc</button>
+        </div>
       </section>
         <section class="summary-band">
           <div class="summary-title">
@@ -1115,6 +1188,14 @@ function leavePage() {
           </label>
           <button type="submit">\uc870\ud68c</button>
         </form>
+        <div class="actions" style="margin-top:10px;">
+          <label>\uc6d4\ubcc4\uc870\ud68c<input type="month" data-period-month="leave" value="${esc(monthValue(state.leaveFilters.to || today()))}"></label>
+          <button class="secondary" type="button" data-action="apply-period" data-scope="leave" data-mode="month">\uc6d4\ubcc4\uc870\ud68c</button>
+          <label>\ub144\ub3c4\ubcc4\uc870\ud68c<input type="number" data-period-year="leave" value="${esc((state.leaveFilters.to || today()).slice(0, 4))}" min="2020" max="2100"></label>
+          <button class="secondary" type="button" data-action="apply-period" data-scope="leave" data-mode="year">\ub144\ub3c4\ubcc4\uc870\ud68c</button>
+          <button class="secondary" type="button" data-action="open-yearly" data-scope="leave">\ub144\ub3c4\ubcc4 \uc804\uccb4</button>
+          <button type="button" data-action="download-yearly" data-scope="leave">\uc5d1\uc140\ub2e4\uc6b4\ub85c\ub4dc</button>
+        </div>
       </section>
       <section class="surface">
         <div class="actions" style="justify-content: space-between;">
@@ -1245,32 +1326,27 @@ function leaveManagePage() {
 
 function approvalsPage() {
   const leaveList = state.leaveRequests.filter((item) => item.status === "PENDING_TEAM_LEAD" || item.status === "PENDING_EXECUTIVE");
-  const attendanceList = state.attendanceRequests.filter((item) => item.status === "PENDING_TEAM_LEAD" || item.status === "PENDING_EXECUTIVE");
-  const overtimeList = isExecutive() ? state.overtimeRecords.filter((item) => item.status === "PENDING_EXECUTIVE") : [];
+  const overtimeList = state.overtimeRecords.filter((item) => {
+    if (isExecutive()) return item.status === "PENDING_EXECUTIVE";
+    return item.status === "PENDING_TEAM_LEAD" && isTeamLead() && item.user?.teamId === state.me.teamId;
+  });
   return appFrame(
-    "\uc2b9\uc778\uad00\ub9ac",
-    "\ud734\uac00, \uadfc\ud0dc, \ucd94\uac00\uadfc\ubb34 \uc2b9\uc778 \ub300\uae30 \ub0b4\uc5ed\uc744 \ud568\uaed8 \ucc98\ub9ac\ud569\ub2c8\ub2e4.",
+    "\ud734\uac00 \uc2b9\uc778\uad00\ub9ac",
+    "\ud734\uac00 \uc2e0\uccad\uacfc \ucd94\uac00\uadfc\ubb34 \ub300\uccb4\ud734\uac00\ubcf4\uc0c1 \uc2e0\uccad\ub0b4\uc5ed\uc744 \ucc98\ub9ac\ud569\ub2c8\ub2e4.",
     `
       <section class="summary-band">
-        <div class="summary-grid" style="grid-template-columns: repeat(4, minmax(0, 1fr));">
+        <div class="summary-grid" style="grid-template-columns: repeat(3, minmax(0, 1fr));">
           ${summaryItem("\ud734\uac00 \uc2b9\uc778 \ub300\uae30", `${leaveList.length}\uac74`)}
-          ${summaryItem("\uadfc\ud0dc \uc218\uc815 \ub300\uae30", `${attendanceList.length}\uac74`)}
-          ${summaryItem("\ucd94\uac00\uadfc\ubb34 \ub300\uae30", `${overtimeList.length}\uac74`)}
-          ${summaryItem("\ucd1d \ucc98\ub9ac \ub300\uae30", `${leaveList.length + attendanceList.length + overtimeList.length}\uac74`)}
+          ${summaryItem("\ub300\uccb4\ud734\uac00\ubcf4\uc0c1 \ub300\uae30", `${overtimeList.length}\uac74`)}
+          ${summaryItem("\ucd1d \ucc98\ub9ac \ub300\uae30", `${leaveList.length + overtimeList.length}\uac74`)}
         </div>
       </section>
-      <section class="grid two">
-        <section class="surface">
-          <h3>\ud734\uac00 \uc2b9\uc778</h3>
-          ${leaveRequestsTable(leaveList, true)}
-        </section>
-        <section class="surface">
-          <h3>\uadfc\ud0dc \uc218\uc815 \uc2b9\uc778</h3>
-          ${attendanceRequestsApprovalTable(attendanceList)}
-        </section>
+      <section class="surface">
+        <h3>\ud734\uac00 \uc2e0\uccad\ub0b4\uc5ed</h3>
+        ${leaveRequestsTable(leaveList, true)}
       </section>
       <section class="surface">
-        <h3>\ucd94\uac00\uadfc\ubb34 \uc2b9\uc778</h3>
+        <h3>\ub300\uccb4\ud734\uac00\ubcf4\uc0c1 \uc2e0\uccad\ub0b4\uc5ed</h3>
         ${overtimeTable(overtimeList, true)}
       </section>
     `
@@ -1526,13 +1602,23 @@ function attendanceRequestsApprovalTable(list) {
               <td>${esc(item.date)}</td>
               <td>\ucd9c\uadfc ${esc(formatTime(item.proposedCheckInAt))}<br>\ud1f4\uadfc ${esc(formatTime(item.proposedCheckOutAt))}</td>
               <td>${renderReasonButton(item.reason)}</td>
-              <td><div class="actions"><button type="button" data-action="attendance-approve" data-request-id="${esc(item.id)}">\uc2b9\uc778</button><button class="secondary" type="button" data-action="attendance-reject" data-request-id="${esc(item.id)}">\ubc18\ub824</button></div></td>
+              <td>${attendanceApprovalButtons(item)}</td>
             </tr>
           `).join("")}
         </tbody>
       </table>
     </div>
   `;
+}
+
+function attendanceApprovalButtons(item) {
+  if (item.status === "PENDING_TEAM_LEAD" && isTeamLead() && item.user?.teamId === state.me.teamId) {
+    return `<div class="actions"><button type="button" data-action="attendance-approve" data-request-id="${esc(item.id)}">\uc2b9\uc778</button><button class="secondary" type="button" data-action="attendance-reject" data-request-id="${esc(item.id)}">\ubc18\ub824</button></div>`;
+  }
+  if (item.status === "PENDING_EXECUTIVE" && isExecutive()) {
+    return `<div class="actions"><button type="button" data-action="attendance-approve" data-request-id="${esc(item.id)}">\uc2b9\uc778</button><button class="secondary" type="button" data-action="attendance-reject" data-request-id="${esc(item.id)}">\ubc18\ub824</button></div>`;
+  }
+  return "-";
 }
 
 function canDashboardQueueTitle() {
@@ -1545,7 +1631,7 @@ function dashboardQueueContent(pendingLeaveApprovals, pendingAttendanceApprovals
     const items = [];
     if (pendingLeaveApprovals.length) items.push(`<div class="notice">\ud734\uac00 \uc2b9\uc778 \ub300\uae30 ${pendingLeaveApprovals.length}\uac74</div>`);
     if (pendingAttendanceApprovals.length) items.push(`<div class="notice">\uadfc\ud0dc \uc2b9\uc778 \ub300\uae30 ${pendingAttendanceApprovals.length}\uac74</div>`);
-    if (pendingOvertimeApprovals.length) items.push(`<div class="notice">\ucd94\uac00\uadfc\ubb34 \uc2b9\uc778 \ub300\uae30 ${pendingOvertimeApprovals.length}\uac74</div>`);
+    if (pendingOvertimeApprovals.length) items.push(`<div class="notice">\ub300\uccb4\ud734\uac00\ubcf4\uc0c1 \uc2b9\uc778 \ub300\uae30 ${pendingOvertimeApprovals.length}\uac74</div>`);
     if (!items.length) return `<div class="empty">\ucc98\ub9ac\ud560 \uc2b9\uc778 \ub300\uae30 \uac74\uc774 \uc5c6\uc2b5\ub2c8\ub2e4.</div>`;
     return `<div class="stack">${items.join("")}</div>`;
   }
@@ -1740,6 +1826,7 @@ function openTextModal(title, content) {
 }
 
 function openAttendanceMarkModal(kind) {
+  const placeholder = kind === "checkIn" ? "\uc608) \uc678\uadfc \ud6c4 \ubc14\ub85c \ucd9c\uadfc" : "\uc608) \uc678\uadfc \ud6c4 \ubc14\ub85c \ud1f4\uadfc";
   openModal(`
     <section class="modal-panel">
       <div class="modal-head">
@@ -1748,7 +1835,7 @@ function openAttendanceMarkModal(kind) {
       </div>
       <form id="attendance-mark-form" class="form-grid compact">
         <input type="hidden" name="kind" value="${esc(kind)}">
-        <label class="wide">\ube44\uace0<textarea name="note"></textarea></label>
+        <label class="wide">\ube44\uace0<textarea name="note" placeholder="${esc(placeholder)}"></textarea></label>
         <div class="wide"><button type="submit">${kind === "checkIn" ? "\ucd9c\uadfc \uc800\uc7a5" : "\ud1f4\uadfc \uc800\uc7a5"}</button></div>
       </form>
     </section>
@@ -1794,6 +1881,9 @@ function openAttendanceDecisionModal(requestId, action) {
 
 function openAttendanceDayModal(date) {
   const records = state.attendance.filter((item) => item.date === date);
+  const overtimeRecords = state.overtimeRecords.filter((item) => item.date === date);
+  const overtimeUsers = new Set(overtimeRecords.map((item) => item.userId)).size;
+  const overtimeMinutes = overtimeRecords.reduce((sum, item) => sum + Number(item.recognizedMinutes || 0), 0);
   const totalTargets = state.attendanceFilters.userId ? 1 : Math.max(0, state.users.filter((user) => isAttendanceTarget(user)).length);
   const summary = attendanceSummary(records);
   openModal(`
@@ -1802,14 +1892,20 @@ function openAttendanceDayModal(date) {
         <div><h2>${esc(date)} \ucd9c\ud1f4\uadfc \ud604\ud669</h2><p>\uc77c\uc790 \uae30\uc900 \uc0c1\uc138 \ub0b4\uc5ed\uc785\ub2c8\ub2e4.</p></div>
         <button class="secondary" type="button" data-action="close-modal">\ub2eb\uae30</button>
       </div>
-      <div class="summary-grid summary-grid-attendance">
+      <div class="summary-grid summary-grid-attendance" style="grid-template-columns: repeat(5, minmax(0, 1fr));">
         ${summaryItem("\uc804\uccb4\ub300\uc0c1\uc790", `${totalTargets}\uba85`)}
         ${summaryItem("\uc815\uc0c1\ucd9c\uadfc", `${summary.normal}\uac74`, "")}
         ${summaryItem("\uc9c0\uac01", `${summary.late}\uac74`, "danger-value")}
+        ${summaryItem("\ucd94\uac00\uadfc\ubb34\uc790", `${overtimeUsers}\uba85`)}
+        ${summaryItem("\ucd94\uac00\uadfc\ubb34\uc2dc\uac04", overtimeMinutes ? esc(formatMinutes(overtimeMinutes)) : "\uc5c6\uc74c")}
       </div>
       <section class="surface" style="margin-top:14px;">
         <h3>\uc0c1\uc138 \ubaa9\ub85d</h3>
         ${attendanceTable(records, false)}
+      </section>
+      <section class="surface" style="margin-top:14px;">
+        <h3>\ucd94\uac00\uadfc\ubb34\uc790</h3>
+        ${overtimeRecords.length ? overtimeTable(overtimeRecords, false, false) : `<div class="empty">\uc5c6\uc74c</div>`}
       </section>
     </section>
   `);
@@ -2035,7 +2131,7 @@ function openOvertimeDecisionModal(recordId, action) {
   openModal(`
     <section class="modal-panel">
       <div class="modal-head">
-        <div><h2>${action === "approve" ? "\ucd94\uac00\uadfc\ubb34 \uc2b9\uc778" : "\ucd94\uac00\uadfc\ubb34 \ubc18\ub824"}</h2></div>
+        <div><h2>${action === "approve" ? "\ub300\uccb4\ud734\uac00\ubcf4\uc0c1 \uc2b9\uc778" : "\ub300\uccb4\ud734\uac00\ubcf4\uc0c1 \ubc18\ub824"}</h2></div>
         <button class="secondary" type="button" data-action="close-modal">\ub2eb\uae30</button>
       </div>
       <form id="overtime-decision-form" class="form-grid compact">
@@ -2049,6 +2145,67 @@ function openOvertimeDecisionModal(recordId, action) {
       </form>
     </section>
   `);
+}
+
+function scopeRows(scope) {
+  if (scope === "attendance") return state.attendance.map((item) => ({
+    date: item.date,
+    user: item.user?.name || "",
+    team: userTeamLabel(item.user),
+    checkIn: formatTime(item.checkInAt),
+    checkOut: formatTime(item.checkOutAt),
+    status: attendanceStatusText(item),
+    checkInIp: item.checkInIp || "",
+    checkOutIp: item.checkOutIp || ""
+  }));
+  if (scope === "leave") return filteredLeaveRequests().map((item) => ({
+    user: item.user?.name || "",
+    type: T.leaveType[item.type] || item.type,
+    startDate: item.startDate,
+    endDate: item.endDate,
+    days: item.days,
+    status: T.requestStatus[item.status] || item.status,
+    reason: item.reason || ""
+  }));
+  return filteredOvertimeRecords().map((item) => ({
+    date: item.date,
+    user: item.user?.name || "",
+    dayType: T.overtimeDayType[item.dayType] || item.dayType,
+    checkIn: formatTime(item.checkInAt),
+    checkOut: formatTime(item.checkOutAt),
+    actual: formatMinutes(item.actualMinutes),
+    recognized: formatMinutes(item.recognizedMinutes),
+    grantDays: item.requestedGrantDays || "",
+    status: T.overtimeStatus[item.status] || item.status
+  }));
+}
+
+function rowsToCsv(rows) {
+  if (!rows.length) return "";
+  const headers = Object.keys(rows[0]);
+  const cell = (value) => `"${String(value ?? "").replace(/"/g, '""')}"`;
+  return [headers.map(cell).join(","), ...rows.map((row) => headers.map((key) => cell(row[key])).join(","))].join("\r\n");
+}
+
+function openYearlyView(scope) {
+  const rows = scopeRows(scope);
+  const title = scope === "attendance" ? "\ucd9c\ud1f4\uadfc \ub144\ub3c4\ubcc4 \uc804\uccb4" : scope === "leave" ? "\ud734\uac00 \ub144\ub3c4\ubcc4 \uc804\uccb4" : "\ucd94\uac00\uadfc\ubb34 \ub144\ub3c4\ubcc4 \uc804\uccb4";
+  const headers = rows[0] ? Object.keys(rows[0]) : [];
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>${esc(title)}</title><style>body{font-family:Arial,sans-serif;padding:24px;}table{border-collapse:collapse;width:100%;}th,td{border:1px solid #ddd;padding:8px;text-align:left;}th{background:#f6f8f7;}</style></head><body><h1>${esc(title)}</h1>${rows.length ? `<table><thead><tr>${headers.map((key) => `<th>${esc(key)}</th>`).join("")}</tr></thead><tbody>${rows.map((row) => `<tr>${headers.map((key) => `<td>${esc(row[key])}</td>`).join("")}</tr>`).join("")}</tbody></table>` : "<p>내역이 없습니다.</p>"}</body></html>`;
+  const win = window.open("", "_blank");
+  if (!win) return notify("\ud31d\uc5c5\uc774 \ucc28\ub2e8\ub418\uc5c8\uc2b5\ub2c8\ub2e4.");
+  win.document.write(html);
+  win.document.close();
+}
+
+function downloadYearlyCsv(scope) {
+  const csv = "\ufeff" + rowsToCsv(scopeRows(scope));
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = `${scope}-${today().slice(0, 4)}.csv`;
+  link.click();
+  URL.revokeObjectURL(link.href);
 }
 
 function openUserModal(userId = "") {
@@ -2165,6 +2322,7 @@ async function refreshAll() {
     api("/api/teams"),
     api(`/api/attendance?from=${encodeURIComponent(state.attendanceFilters.from)}&to=${encodeURIComponent(state.attendanceFilters.to)}${state.attendanceFilters.userId ? `&userId=${encodeURIComponent(state.attendanceFilters.userId)}` : ""}`),
     api("/api/attendance-change-requests"),
+    api("/api/attendance-adjustment-logs"),
     api(`/api/leave-balances?year=${encodeURIComponent(state.leaveYear)}`),
     api("/api/leave-requests"),
     api("/api/overtime-records"),
@@ -2180,18 +2338,19 @@ async function refreshAll() {
   state.teams = results[1].teams || [];
   state.attendance = results[2].records || [];
   state.attendanceRequests = results[3].requests || [];
-  state.leaveBalances = results[4].balances || [];
-  state.leaveRequests = results[5].requests || [];
-  state.overtimeRecords = results[6].records || [];
-  state.holidays = results[7].holidays || [];
+  state.attendanceAdjustmentLogs = results[4].logs || [];
+  state.leaveBalances = results[5].balances || [];
+  state.leaveRequests = results[6].requests || [];
+  state.overtimeRecords = results[7].records || [];
+  state.holidays = results[8].holidays || [];
   if (!state.selectedUserId || !state.users.some((user) => user.id === state.selectedUserId)) {
     state.selectedUserId = state.users[0]?.id || "";
   }
   if (isExecutive()) {
-    state.leaveAdjustments = results[8].adjustments || [];
-    state.allowedIps = results[9].allowedIps || [];
-    state.ipRestrictionEnabled = Boolean(results[9].ipRestrictionEnabled);
-    state.auditLogs = results[10].logs || [];
+    state.leaveAdjustments = results[9].adjustments || [];
+    state.allowedIps = results[10].allowedIps || [];
+    state.ipRestrictionEnabled = Boolean(results[10].ipRestrictionEnabled);
+    state.auditLogs = results[11].logs || [];
   }
   renderApp();
 }
@@ -2209,6 +2368,22 @@ document.addEventListener("click", async (event) => {
     if (action === "refresh") {
       await refreshAll();
       notify("\uc0c8\ub85c\uace0\uce68\ud588\uc2b5\ub2c8\ub2e4.");
+      return;
+    }
+    if (action === "apply-period" || action === "open-yearly" || action === "download-yearly") {
+      const scope = button.dataset.scope;
+      const mode = button.dataset.mode;
+      const root = button.closest(".surface") || document;
+      const range = mode === "month"
+        ? monthRange(root.querySelector(`[data-period-month="${scope}"]`)?.value)
+        : yearRange(root.querySelector(`[data-period-year="${scope}"]`)?.value);
+      const filters = scope === "attendance" ? state.attendanceFilters : scope === "leave" ? state.leaveFilters : state.overtimeFilters;
+      filters.from = range.from;
+      filters.to = range.to;
+      if (scope === "leave") state.leaveYear = range.from.slice(0, 4);
+      await refreshAll();
+      if (action === "open-yearly") openYearlyView(scope);
+      if (action === "download-yearly") downloadYearlyCsv(scope);
       return;
     }
     if (action === "logout") {
@@ -2308,6 +2483,12 @@ document.addEventListener("click", async (event) => {
     }
     if (action === "show-attendance-history") {
       const data = await api(`/api/attendance-adjustment-logs?requestId=${encodeURIComponent(button.dataset.requestId)}`);
+      const rows = (data.logs || []).map((item) => `<tr><td>${esc(formatDateTime(item.createdAt))}</td><td>${esc(item.changedByUser?.name || "-")}</td><td>${esc(item.reason || "-")}</td></tr>`).join("");
+      openModal(`<section class="modal-panel"><div class="modal-head"><div><h2>\uc218\uc815\uc774\ub825</h2></div><button class="secondary" type="button" data-action="close-modal">\ub2eb\uae30</button></div><div class="table-wrap"><table><thead><tr><th>\uc77c\uc2dc</th><th>\ucc98\ub9ac\uc790</th><th>\ube44\uace0</th></tr></thead><tbody>${rows || '<tr><td colspan="3">-</td></tr>'}</tbody></table></div></section>`);
+      return;
+    }
+    if (action === "show-attendance-record-history") {
+      const data = await api(`/api/attendance-adjustment-logs?recordId=${encodeURIComponent(button.dataset.recordId)}`);
       const rows = (data.logs || []).map((item) => `<tr><td>${esc(formatDateTime(item.createdAt))}</td><td>${esc(item.changedByUser?.name || "-")}</td><td>${esc(item.reason || "-")}</td></tr>`).join("");
       openModal(`<section class="modal-panel"><div class="modal-head"><div><h2>\uc218\uc815\uc774\ub825</h2></div><button class="secondary" type="button" data-action="close-modal">\ub2eb\uae30</button></div><div class="table-wrap"><table><thead><tr><th>\uc77c\uc2dc</th><th>\ucc98\ub9ac\uc790</th><th>\ube44\uace0</th></tr></thead><tbody>${rows || '<tr><td colspan="3">-</td></tr>'}</tbody></table></div></section>`);
       return;
@@ -2610,7 +2791,7 @@ document.addEventListener("submit", async (event) => {
       });
       closeModal();
       await refreshAll();
-      notify(data.action === "approve" ? "\ucd94\uac00\uadfc\ubb34 \uc694\uccad\uc744 \uc2b9\uc778\ud588\uc2b5\ub2c8\ub2e4." : "\ucd94\uac00\uadfc\ubb34 \uc694\uccad\uc744 \ubc18\ub824\ud588\uc2b5\ub2c8\ub2e4.");
+      notify(data.action === "approve" ? "\ub300\uccb4\ud734\uac00\ubcf4\uc0c1 \uc694\uccad\uc744 \uc2b9\uc778\ud588\uc2b5\ub2c8\ub2e4." : "\ub300\uccb4\ud734\uac00\ubcf4\uc0c1 \uc694\uccad\uc744 \ubc18\ub824\ud588\uc2b5\ub2c8\ub2e4.");
       return;
     }
     if (form.id === "password-form") {

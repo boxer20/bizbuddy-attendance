@@ -202,6 +202,7 @@ th { color: var(--muted); font-size: 11px; background: #fbfcfd; }
 .summary-item.clickable:hover { background: #f5fff9; border-color: #c6ead7; transform: translateY(-1px); }
 .summary-item span { color: var(--muted); font-size: 11px; font-weight: 700; }
 .summary-item strong { font-size: 22px; color: #143728; }
+.summary-item strong .badge { vertical-align: middle; margin-left: 6px; }
 .summary-item.danger-value strong { color: var(--red); }
 .summary-item.is-muted { background: #f8fbf9; border-color: #e2ece7; }
 .summary-item.is-muted::before { background: linear-gradient(90deg, #dbe8e1 0%, #edf4f0 100%); }
@@ -255,6 +256,7 @@ th { color: var(--muted); font-size: 11px; background: #fbfcfd; }
 .table-wrap tbody tr.group-divider td { border-top: 10px solid #f4f7f5; }
 .table-wrap tbody tr.date-group-start td { border-top: 10px solid #f4f7f5; }
 .table-wrap tbody tr.date-group-start td:first-child { box-shadow: inset 0 1px 0 #dfe7e2; }
+.attendance-time-line { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .detail-list { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0; margin: 0; border: 1px solid #e2efe8; border-radius: 8px; overflow: hidden; align-self: start; }
 .detail-list div { display: grid; gap: 6px; padding: 12px; border-right: 1px solid #e2efe8; border-bottom: 1px solid #e2efe8; background: #fff; }
 .detail-list dt { margin: 0; color: var(--muted); font-size: 12px; font-weight: 800; }
