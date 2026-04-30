@@ -54,6 +54,7 @@ const state = {
   auditLogs: [],
   ipRestrictionEnabled: false,
   tab: "dashboard",
+  dashboardDate: today(),
   attendanceViewMode: "table",
   attendanceCalendarMonth: today().slice(0, 7),
   leaveViewMode: "table",
@@ -208,6 +209,12 @@ function monthRange(month) {
   const [year, monthNumber] = value.split("-").map(Number);
   const last = new Date(year, monthNumber, 0).getDate();
   return { from: `${value}-01`, to: `${value}-${String(last).padStart(2, "0")}` };
+}
+
+function shiftDate(date, offsetDays) {
+  const value = new Date(`${date}T00:00:00`);
+  value.setDate(value.getDate() + offsetDays);
+  return value.toLocaleDateString("en-CA");
 }
 
 function teamName(teamId) {
@@ -499,7 +506,30 @@ function summaryButton(label, value, action, extraClass = "") {
   return `<button class="summary-item clickable ${extraClass}" type="button" data-action="${esc(action)}"><span>${esc(label)}</span><strong>${value}</strong></button>`;
 }
 
+function dashboardDayData() {
+  const date = state.dashboardDate || today();
+  const targets = state.users.filter((user) => isAttendanceTarget(user));
+  const attendance = state.attendance.filter((item) => item.date === date && isAttendanceTarget(item.user));
+  const normal = attendance.filter((item) => attendanceJudge(item) === "NORMAL");
+  const late = attendance.filter((item) => attendanceJudge(item) === "LATE");
+  const notCheckedOut = attendance.filter((item) => item.checkInAt && !item.checkOutAt);
+  const leave = state.leaveRequests.filter((item) => (
+    item.status === "APPROVED" &&
+    item.startDate <= date &&
+    item.endDate >= date
+  ));
+  return { date, targets, attendance, normal, late, notCheckedOut, leave };
+}
+
+function dashboardLeaveSummary(items) {
+  if (!items.length) return "\uc5c6\uc74c";
+  const labels = items.slice(0, 2).map((item) => `${esc(item.user?.name || "-")} / ${esc(T.leaveType[item.type] || item.type)}`);
+  const extra = items.length > 2 ? ` \uc678 ${items.length - 2}\uba85` : "";
+  return `${labels.join("<br>")}${extra}`;
+}
+
 function dashboardPage() {
+  const dayData = dashboardDayData();
   const attendanceTargets = state.users.filter((user) => isAttendanceTarget(user));
   const myBalance = state.leaveBalances.find((item) => item.userId === state.me.id);
   const myNumbers = myBalance ? balanceNumbers(myBalance) : null;
@@ -509,14 +539,8 @@ function dashboardPage() {
     ? `${esc(formatTime(todayRecord.checkInAt))} <span class="badge ${badgeClass(attendanceJudge(todayRecord))}">${esc(attendanceBadgeText(todayRecord))}</span>`
     : "-";
   const mySummary = attendanceSummary(myRecords);
-  const orgRecords = state.attendance.filter((item) => isAttendanceTarget(item.user));
+  const orgRecords = dayData.attendance;
   const orgSummary = attendanceSummary(orgRecords);
-  const orgLeaveNumbers = state.leaveBalances
-    .map((item) => balanceNumbers(item))
-    .reduce((acc, item) => ({
-      used: acc.used + item.used,
-      remaining: acc.remaining + item.remaining
-    }), { used: 0, remaining: 0 });
   const pendingLeaveApprovals = state.leaveRequests.filter((item) => {
     if (item.status === "PENDING_EXECUTIVE" && isExecutive()) return true;
     if (item.status === "PENDING_TEAM_LEAD" && isTeamLead() && item.user?.teamId === state.me.teamId) return true;
@@ -536,31 +560,32 @@ function dashboardPage() {
     `
       <section class="summary-band">
         <div class="summary-title">
-          <h2>${isExecutive() ? `${esc(state.leaveYear)}\ub144 \uc804\uccb4 \ud604\ud669 \uc694\uc57d` : `${esc(state.me?.name || "")}\ub2d8\uc758 \uc624\ub298`}</h2>
+          <h2>${isExecutive() ? `${esc(dayData.date)} \ud604\ud669 \uc694\uc57d` : `${esc(state.me?.name || "")}\ub2d8\uc758 \uc624\ub298`}</h2>
           <p>${esc(T.role[state.me?.role] || state.me?.role || "")} / ${esc(userTeamLabel(state.me))}</p>
+          ${isExecutive() ? `<label class="dashboard-date-control">\uc870\ud68c\ub0a0\uc9dc <input type="date" data-dashboard-date value="${esc(dayData.date)}"><button class="link-button" type="button" data-action="dashboard-yesterday">\uc804\uc77c</button></label>` : ""}
         </div>
         <div class="summary-grid">
           ${isExecutive()
-            ? summaryItem("\ucd9c\ud1f4\uadfc \ub300\uc0c1", `${attendanceTargets.length}\uba85`)
+            ? summaryButton("\ucd9c\ud1f4\uadfc \ub300\uc0c1", `${dayData.targets.length}\uba85`, "dashboard-detail-targets")
             : summaryItem("\uc624\ub298 \ucd9c\uadfc", todayCheckInSummary)}
-          ${isExecutive() ? summaryItem("\uc815\uc0c1\ucd9c\uadfc", `${orgSummary.normal}\uac74`) : ""}
+          ${isExecutive() ? summaryButton("\uc815\uc0c1\ucd9c\uadfc", `${dayData.normal.length}\uac74`, "dashboard-detail-normal") : ""}
           ${isExecutive()
-            ? summaryItem("\uc9c0\uac01 / \ubbf8\ud1f4\uadfc", `${orgSummary.late}\uac74 / ${orgSummary.notCheckedOut}\uac74`, orgSummary.late || orgSummary.notCheckedOut ? "danger-value" : "")
+            ? summaryButton("\uc9c0\uac01 / \ubbf8\ud1f4\uadfc", `${dayData.late.length}\uac74 / ${dayData.notCheckedOut.length}\uac74`, "dashboard-detail-issues", dayData.late.length || dayData.notCheckedOut.length ? "danger-value" : "")
             : summaryItem("\uc624\ub298 \ud1f4\uadfc", todayRecord?.checkOutAt ? esc(formatTime(todayRecord.checkOutAt)) : "-")}
-          ${summaryItem("\ub0a8\uc740 \uc5f0\ucc28", isExecutive() ? `${orgLeaveNumbers.remaining}\uc77c` : (myNumbers ? `${myNumbers.remaining}\uc77c` : "-"))}
-          ${summaryItem("\ud734\uac00 \ucd1d\uc0ac\uc6a9", isExecutive() ? `${orgLeaveNumbers.used}\uc77c` : (myNumbers ? `${myNumbers.used}\uc77c` : "-"))}
-          ${summaryItem("\ud734\uac00 \uc2b9\uc778 \ub300\uae30", `${pendingLeaveApprovals.length}\uac74`, pendingLeaveApprovals.length ? "danger-value" : "")}
-          ${summaryItem("\uadfc\ud0dc \uc2b9\uc778 \ub300\uae30", `${pendingAttendanceApprovals.length}\uac74`, pendingAttendanceApprovals.length ? "danger-value" : "")}
-          ${summaryItem("\ub300\uccb4\ud734\uac00\ubcf4\uc0c1 \ub300\uae30", `${pendingOvertimeApprovals.length}\uac74`, pendingOvertimeApprovals.length ? "danger-value" : "")}
+          ${isExecutive()
+            ? summaryButton("\uc5f0\ucc28\uc815\ubcf4", dashboardLeaveSummary(dayData.leave), "dashboard-detail-leave", dayData.leave.length ? "" : "is-muted")
+            : summaryItem("\ub0a8\uc740 \uc5f0\ucc28", myNumbers ? `${myNumbers.remaining}\uc77c` : "-")}
+          ${isExecutive() ? "" : summaryItem("\ud734\uac00 \ucd1d\uc0ac\uc6a9", myNumbers ? `${myNumbers.used}\uc77c` : "-")}
         </div>
       </section>
-      ${(pendingLeaveApprovals.length || pendingAttendanceApprovals.length || pendingOvertimeApprovals.length) ? `
-        <section class="notice warn">
-          ${pendingLeaveApprovals.length ? `\ud734\uac00 \uc2b9\uc778 \ub300\uae30 ${pendingLeaveApprovals.length}\uac74` : ""}
-          ${pendingLeaveApprovals.length && pendingAttendanceApprovals.length ? " / " : ""}
-          ${pendingAttendanceApprovals.length ? `\uadfc\ud0dc \uc2b9\uc778 \ub300\uae30 ${pendingAttendanceApprovals.length}\uac74` : ""}
-          ${(pendingLeaveApprovals.length || pendingAttendanceApprovals.length) && pendingOvertimeApprovals.length ? " / " : ""}
-          ${pendingOvertimeApprovals.length ? `\ub300\uccb4\ud734\uac00\ubcf4\uc0c1 \ub300\uae30 ${pendingOvertimeApprovals.length}\uac74` : ""}
+      ${isExecutive() ? `
+        <section class="surface">
+          <h3>Today \uc2b9\uc778\uc694\uccad \ud604\ud669</h3>
+          <div class="summary-grid summary-grid-attendance">
+            ${summaryButton("\ud734\uac00 \uc2b9\uc778 \ub300\uae30", `${pendingLeaveApprovals.length}\uac74`, "open-approval-window-leave", pendingLeaveApprovals.length ? "danger-value" : "")}
+            ${summaryButton("\uadfc\ud0dc \uc2b9\uc778 \ub300\uae30", `${pendingAttendanceApprovals.length}\uac74`, "open-approval-window-attendance", pendingAttendanceApprovals.length ? "danger-value" : "")}
+            ${summaryButton("\ub300\uccb4\ud734\uac00\ubcf4\uc0c1 \ub300\uae30", `${pendingOvertimeApprovals.length}\uac74`, "open-approval-window-overtime", pendingOvertimeApprovals.length ? "danger-value" : "")}
+          </div>
         </section>
       ` : ""}
       <section class="surface">
@@ -600,7 +625,7 @@ function dashboardPage() {
         </div>
         <div class="surface">
           <h3>${canDashboardQueueTitle()}</h3>
-          ${dashboardQueueContent(pendingLeaveApprovals, pendingAttendanceApprovals, pendingOvertimeApprovals)}
+          ${isExecutive() ? `<div class="empty">Today \uc8fc\uc694 \ud604\ud669\uc5d0\uc11c \uc2b9\uc778 \ub300\uae30\ub97c \ud655\uc778\ud569\ub2c8\ub2e4.</div>` : dashboardQueueContent(pendingLeaveApprovals, pendingAttendanceApprovals, pendingOvertimeApprovals)}
         </div>
       </section>
     `
@@ -1759,6 +1784,7 @@ function renderLogin() {
         <form id="login-form" class="form-grid compact">
           <label class="wide">\ub85c\uadf8\uc778 ID<input name="loginId" required></label>
           <label class="wide">\ube44\ubc00\ubc88\ud638<input type="password" name="password" required></label>
+          <div class="wide form-error" data-login-error hidden></div>
           <div class="wide"><button type="submit">\ub85c\uadf8\uc778</button></div>
         </form>
       </section>
@@ -1998,6 +2024,39 @@ function openLeaveAdjustModal() {
         <label class="wide">\uc0ac\uc720<textarea name="reason" required></textarea></label>
         <div class="wide"><button type="submit">\uc800\uc7a5</button></div>
       </form>
+    </section>
+  `);
+}
+
+function openDashboardDetail(mode) {
+  const data = dashboardDayData();
+  let title = `${data.date} \ud604\ud669`;
+  let content = "";
+  if (mode === "targets") {
+    title = `${data.date} \ucd9c\ud1f4\uadfc \ub300\uc0c1`;
+    content = data.targets.length ? `
+      <div class="table-wrap"><table><thead><tr><th>\uc9c1\uc6d0</th><th>\uc9c1\uae09</th><th>\ud300</th></tr></thead><tbody>
+        ${data.targets.map((user) => `<tr><td>${esc(user.name)}</td><td>${esc(T.role[user.role] || user.role)}</td><td>${esc(userTeamLabel(user))}</td></tr>`).join("")}
+      </tbody></table></div>
+    ` : `<div class="empty">\ub300\uc0c1\uc790\uac00 \uc5c6\uc2b5\ub2c8\ub2e4.</div>`;
+  } else if (mode === "normal") {
+    title = `${data.date} \uc815\uc0c1\ucd9c\uadfc`;
+    content = attendanceTable(data.normal, false);
+  } else if (mode === "issues") {
+    title = `${data.date} \uc9c0\uac01 / \ubbf8\ud1f4\uadfc`;
+    const rows = [...data.late, ...data.notCheckedOut.filter((item) => !data.late.some((late) => late.id === item.id))];
+    content = attendanceTable(rows, false);
+  } else {
+    title = `${data.date} \uc5f0\ucc28\uc815\ubcf4`;
+    content = data.leave.length ? leaveRequestsTable(data.leave, false) : `<div class="empty">\uc5f0\ucc28 \uc0ac\uc6a9\uc790\uac00 \uc5c6\uc2b5\ub2c8\ub2e4.</div>`;
+  }
+  openModal(`
+    <section class="modal-panel wide-modal">
+      <div class="modal-head">
+        <div><h2>${esc(title)}</h2></div>
+        <button class="secondary" type="button" data-action="close-modal">\ub2eb\uae30</button>
+      </div>
+      ${content}
     </section>
   `);
 }
@@ -2304,23 +2363,35 @@ function openIpModal() {
 }
 
 async function loadSession() {
+  let data;
   try {
-    const data = await api("/api/me");
-    state.me = data.user;
-    state.team = data.team;
-    state.currentIp = data.currentIp || "";
-    await refreshAll();
+    data = await api("/api/me");
   } catch {
     renderLogin();
+    return;
   }
+  state.me = data.user;
+  state.team = data.team;
+  state.currentIp = data.currentIp || "";
+  const hashTab = location.hash.replace("#", "");
+  if (hashTab) state.tab = hashTab;
+  await refreshAll();
 }
 
 async function refreshAll() {
   if (!state.me) return;
+  const dashboardRangeStart = shiftDate(state.dashboardDate || today(), -7);
+  const dashboardRangeEnd = shiftDate(state.dashboardDate || today(), 7);
+  const attendanceFrom = state.tab === "dashboard" && isExecutive()
+    ? (state.attendanceFilters.from < dashboardRangeStart ? state.attendanceFilters.from : dashboardRangeStart)
+    : state.attendanceFilters.from;
+  const attendanceTo = state.tab === "dashboard" && isExecutive()
+    ? (state.attendanceFilters.to > dashboardRangeEnd ? state.attendanceFilters.to : dashboardRangeEnd)
+    : state.attendanceFilters.to;
   const tasks = [
     api("/api/users"),
     api("/api/teams"),
-    api(`/api/attendance?from=${encodeURIComponent(state.attendanceFilters.from)}&to=${encodeURIComponent(state.attendanceFilters.to)}${state.attendanceFilters.userId ? `&userId=${encodeURIComponent(state.attendanceFilters.userId)}` : ""}`),
+    api(`/api/attendance?from=${encodeURIComponent(attendanceFrom)}&to=${encodeURIComponent(attendanceTo)}${state.attendanceFilters.userId ? `&userId=${encodeURIComponent(state.attendanceFilters.userId)}` : ""}`),
     api("/api/attendance-change-requests"),
     api("/api/attendance-adjustment-logs"),
     api(`/api/leave-balances?year=${encodeURIComponent(state.leaveYear)}`),
@@ -2368,6 +2439,35 @@ document.addEventListener("click", async (event) => {
     if (action === "refresh") {
       await refreshAll();
       notify("\uc0c8\ub85c\uace0\uce68\ud588\uc2b5\ub2c8\ub2e4.");
+      return;
+    }
+    if (action === "dashboard-yesterday") {
+      state.dashboardDate = shiftDate(today(), -1);
+      await refreshAll();
+      return;
+    }
+    if (action === "dashboard-detail-targets") {
+      openDashboardDetail("targets");
+      return;
+    }
+    if (action === "dashboard-detail-normal") {
+      openDashboardDetail("normal");
+      return;
+    }
+    if (action === "dashboard-detail-issues") {
+      openDashboardDetail("issues");
+      return;
+    }
+    if (action === "dashboard-detail-leave") {
+      openDashboardDetail("leave");
+      return;
+    }
+    if (action === "open-approval-window-leave" || action === "open-approval-window-overtime") {
+      window.open(`${location.pathname}#approvals`, "_blank");
+      return;
+    }
+    if (action === "open-approval-window-attendance") {
+      window.open(`${location.pathname}#attendanceRequests`, "_blank");
       return;
     }
     if (action === "apply-period" || action === "open-yearly" || action === "download-yearly") {
@@ -2615,6 +2715,12 @@ document.addEventListener("click", async (event) => {
 });
 
 document.addEventListener("change", (event) => {
+  const dashboardDate = event.target.closest("[data-dashboard-date]");
+  if (dashboardDate) {
+    state.dashboardDate = dashboardDate.value || today();
+    refreshAll();
+    return;
+  }
   const select = event.target.closest("[data-role-select]");
   if (select) {
     const form = select.closest("form");
@@ -2641,6 +2747,11 @@ document.addEventListener("submit", async (event) => {
   const data = Object.fromEntries(new FormData(form).entries());
   try {
     if (form.id === "login-form") {
+      const loginError = form.querySelector("[data-login-error]");
+      if (loginError) {
+        loginError.hidden = true;
+        loginError.textContent = "";
+      }
       await api("/api/login", { method: "POST", body: data });
       await loadSession();
       return;
@@ -2857,9 +2968,18 @@ document.addEventListener("submit", async (event) => {
       return;
     }
   } catch (error) {
+    if (form.id === "login-form") {
+      const loginError = form.querySelector("[data-login-error]");
+      if (loginError) {
+        loginError.textContent = error.message || "\ub85c\uadf8\uc778\uc5d0 \uc2e4\ud328\ud588\uc2b5\ub2c8\ub2e4.";
+        loginError.hidden = false;
+      }
+    }
     notify(error.message, "error");
   }
 });
 
-loadSession();
+loadSession().catch((error) => {
+  notify(error.message || "\ud654\uba74\uc744 \ubd88\ub7ec\uc624\uc9c0 \ubabb\ud588\uc2b5\ub2c8\ub2e4.", "error");
+});
 
