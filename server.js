@@ -217,6 +217,7 @@ function normalizeDb(db) {
     user.breakStart = user.breakStart || DEFAULT_BREAK_START;
     user.breakEnd = user.breakEnd || DEFAULT_BREAK_END;
   });
+  normalizePendingApprovalRoutes(db);
   db.allowedIps.forEach((entry) => {
     entry.ip = normalizeIp(entry.ip);
   });
@@ -289,6 +290,22 @@ function activeTeamLeadForUser(db, user) {
 function initialApprovalStatus(db, user) {
   if (isExecutive(user)) return "APPROVED";
   return activeTeamLeadForUser(db, user) ? "PENDING_TEAM_LEAD" : "PENDING_EXECUTIVE";
+}
+
+function normalizePendingApprovalRoutes(db) {
+  const normalizeItem = (item) => {
+    if (!item || item.status !== "PENDING_TEAM_LEAD") return;
+    const user = db.users.find((entry) => entry.id === item.userId);
+    if (!activeTeamLeadForUser(db, user)) {
+      item.status = "PENDING_EXECUTIVE";
+      item.updatedAt = item.updatedAt || nowIso();
+    }
+  };
+  db.attendanceChangeRequests.forEach(normalizeItem);
+  db.leaveRequests.forEach(normalizeItem);
+  db.overtimeRecords.forEach((record) => {
+    if (Number(record.requestedGrantDays || 0) > 0) normalizeItem(record);
+  });
 }
 
 function resolveUserTeamId(db, role, teamId) {
@@ -1126,7 +1143,7 @@ async function handleApi(req, res, pathname, searchParams) {
         request.teamLeadComment = String(body.comment || "").trim();
         request.updatedAt = nowIso();
         audit(ctx.db, ctx.user.id, "ATTENDANCE_CHANGE_TEAM_APPROVED", { requestId }, req);
-      } else if (isExecutive(ctx.user)) {
+      } else if (request.status === "PENDING_EXECUTIVE" && isExecutive(ctx.user)) {
         request.status = "APPROVED";
         request.executiveId = ctx.user.id;
         request.executiveComment = String(body.comment || "").trim();
@@ -1137,7 +1154,7 @@ async function handleApi(req, res, pathname, searchParams) {
         return sendError(res, 403, "승인 권한이 없습니다.", "FORBIDDEN");
       }
     } else {
-      if (!((request.status === "PENDING_TEAM_LEAD" && isTeamLead(ctx.user) && ctx.user.teamId === target.teamId) || isExecutive(ctx.user))) return sendError(res, 403, "반려 권한이 없습니다.", "FORBIDDEN");
+      if (!((request.status === "PENDING_TEAM_LEAD" && isTeamLead(ctx.user) && ctx.user.teamId === target.teamId) || (request.status === "PENDING_EXECUTIVE" && isExecutive(ctx.user)))) return sendError(res, 403, "반려 권한이 없습니다.", "FORBIDDEN");
       request.status = "REJECTED";
       if (isExecutive(ctx.user)) {
         request.executiveId = ctx.user.id;
@@ -1312,7 +1329,7 @@ async function handleApi(req, res, pathname, searchParams) {
         sendJson(res, 200, { ok: true, record: { ...record, user: userSummary(ctx.db, record.userId) } });
         return;
       }
-      if (!isExecutive(ctx.user)) return sendError(res, 403, "승인 권한이 없습니다.", "FORBIDDEN");
+      if (!(record.status === "PENDING_EXECUTIVE" && isExecutive(ctx.user))) return sendError(res, 403, "승인 권한이 없습니다.", "FORBIDDEN");
       const year = Number(String(record.date).slice(0, 4));
       const adjustment = {
         id: newId("leaveadj"),
@@ -1337,7 +1354,7 @@ async function handleApi(req, res, pathname, searchParams) {
         grantedDays: record.requestedGrantDays
       }, req);
     } else {
-      if (!((record.status === "PENDING_TEAM_LEAD" && isTeamLead(ctx.user) && ctx.user.teamId === target.teamId) || isExecutive(ctx.user))) return sendError(res, 403, "반려 권한이 없습니다.", "FORBIDDEN");
+      if (!((record.status === "PENDING_TEAM_LEAD" && isTeamLead(ctx.user) && ctx.user.teamId === target.teamId) || (record.status === "PENDING_EXECUTIVE" && isExecutive(ctx.user)))) return sendError(res, 403, "반려 권한이 없습니다.", "FORBIDDEN");
       record.status = "REJECTED";
       record.decisionComment = String(body.comment || "").trim();
       if (isExecutive(ctx.user)) record.rejectedBy = ctx.user.id;
@@ -1523,7 +1540,7 @@ async function handleApi(req, res, pathname, searchParams) {
         request.updatedAt = nowIso();
         ctx.db.leaveApprovalLogs.push({ id: newId("leavelog"), leaveRequestId: request.id, actorId: ctx.user.id, action: "TEAM_APPROVED", comment: request.teamLeadComment, createdAt: nowIso() });
         audit(ctx.db, ctx.user.id, "LEAVE_TEAM_APPROVED", { requestId }, req);
-      } else if (isExecutive(ctx.user)) {
+      } else if (request.status === "PENDING_EXECUTIVE" && isExecutive(ctx.user)) {
         const year = Number(request.startDate.slice(0, 4));
         const balance = getLeaveBalance(ctx.db, request.userId, year, { includePending: true, excludeRequestId: request.id });
         const remaining = leaveBalanceKind(request.type) === "COMPENSATORY" ? balance.compensatoryRemaining : balance.annualRemaining;
@@ -1537,7 +1554,7 @@ async function handleApi(req, res, pathname, searchParams) {
       } else {
         return sendError(res, 403, "승인 권한이 없습니다.", "FORBIDDEN");
       }
-    } else if ((request.status === "PENDING_TEAM_LEAD" && isTeamLead(ctx.user) && ctx.user.teamId === target.teamId) || isExecutive(ctx.user)) {
+    } else if ((request.status === "PENDING_TEAM_LEAD" && isTeamLead(ctx.user) && ctx.user.teamId === target.teamId) || (request.status === "PENDING_EXECUTIVE" && isExecutive(ctx.user))) {
       const comment = String(body.comment || "").trim();
       request.status = "REJECTED";
       if (isExecutive(ctx.user)) {

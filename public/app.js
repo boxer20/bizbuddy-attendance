@@ -55,6 +55,8 @@ const state = {
   ipRestrictionEnabled: false,
   tab: "dashboard",
   dashboardDate: today(),
+  dashboardMode: "day",
+  dashboardUserId: "",
   attendanceViewMode: "table",
   attendanceCalendarMonth: today().slice(0, 7),
   leaveViewMode: "table",
@@ -528,8 +530,28 @@ function dashboardLeaveSummary(items) {
   return `${labels.join("<br>")}${extra}`;
 }
 
+function dashboardSelectedUser() {
+  const targets = state.users.filter((user) => isAttendanceTarget(user));
+  if (!state.dashboardUserId || !targets.some((user) => user.id === state.dashboardUserId)) {
+    state.dashboardUserId = targets[0]?.id || "";
+  }
+  return targets.find((user) => user.id === state.dashboardUserId) || null;
+}
+
+function dashboardYearData() {
+  const year = String(state.dashboardDate || today()).slice(0, 4);
+  const user = dashboardSelectedUser();
+  const records = state.attendance.filter((item) => item.userId === user?.id && String(item.date || "").startsWith(year));
+  const summary = attendanceSummary(records);
+  const balance = state.leaveBalances.find((item) => item.userId === user?.id);
+  const numbers = balance ? balanceNumbers(balance) : null;
+  return { year, user, records, summary, numbers };
+}
+
 function dashboardPage() {
   const dayData = dashboardDayData();
+  const yearData = dashboardYearData();
+  const isDashboardYear = isExecutive() && state.dashboardMode === "year";
   const attendanceTargets = state.users.filter((user) => isAttendanceTarget(user));
   const myBalance = state.leaveBalances.find((item) => item.userId === state.me.id);
   const myNumbers = myBalance ? balanceNumbers(myBalance) : null;
@@ -547,8 +569,8 @@ function dashboardPage() {
     return false;
   });
   const pendingAttendanceApprovals = state.attendanceRequests.filter((item) => {
-    if (!isExecutive()) return false;
-    return item.status === "PENDING_TEAM_LEAD" || item.status === "PENDING_EXECUTIVE";
+    if (isExecutive()) return item.status === "PENDING_EXECUTIVE";
+    return item.status === "PENDING_TEAM_LEAD" && isTeamLead() && item.user?.teamId === state.me.teamId;
   });
   const pendingOvertimeApprovals = state.overtimeRecords.filter((item) => {
     if (isExecutive()) return item.status === "PENDING_EXECUTIVE";
@@ -560,24 +582,44 @@ function dashboardPage() {
     `
       <section class="summary-band">
         <div class="summary-title">
-          <h2>${isExecutive() ? `${esc(dayData.date)} \ud604\ud669 \uc694\uc57d` : `${esc(state.me?.name || "")}\ub2d8\uc758 \uc624\ub298`}</h2>
+          <h2>${isExecutive() ? (isDashboardYear ? `${esc(yearData.year)} \uadfc\ud0dc\ud604\ud669` : `${esc(dayData.date)} \ud604\ud669 \uc694\uc57d`) : `${esc(state.me?.name || "")}\ub2d8\uc758 \uc624\ub298`}</h2>
           <p>${esc(T.role[state.me?.role] || state.me?.role || "")} / ${esc(userTeamLabel(state.me))}</p>
-          ${isExecutive() ? `<label class="dashboard-date-control">\uc870\ud68c\ub0a0\uc9dc <input type="date" data-dashboard-date value="${esc(dayData.date)}"><button class="link-button" type="button" data-action="dashboard-yesterday">\uc804\uc77c</button></label>` : ""}
+          ${isExecutive() ? `
+            <div class="dashboard-date-control">
+              ${isDashboardYear
+                ? `<label>\uc9c1\uc6d0 <select data-dashboard-user>${attendanceTargets.map((user) => `<option value="${esc(user.id)}" ${yearData.user?.id === user.id ? "selected" : ""}>${esc(user.name)} (${esc(userTeamLabel(user))})</option>`).join("")}</select></label>`
+                : `<label>\uc870\ud68c\ub0a0\uc9dc <input type="date" data-dashboard-date value="${esc(dayData.date)}"></label><button class="link-button" type="button" data-action="dashboard-yesterday">\uc804\uc77c</button>`}
+              <button class="secondary" type="button" data-action="dashboard-mode" data-mode="${isDashboardYear ? "day" : "year"}">${isDashboardYear ? "\uc77c\uc790 \ud604\ud669\uc694\uc57d" : `${esc(today().slice(0, 4))}\ub144 \ud604\ud669 \uc804\uccb4\ubcf4\uae30`}</button>
+            </div>
+          ` : ""}
         </div>
         <div class="summary-grid">
-          ${isExecutive()
+          ${isDashboardYear ? `
+            ${summaryButton("\uc815\uc0c1\ucd9c\uadfc\ud69f\uc218", `${yearData.summary.normal}\uac74`, "dashboard-year-detail-normal")}
+            ${summaryButton("\uc9c0\uac01", `${yearData.summary.late}\uac74`, "dashboard-year-detail-late", yearData.summary.late ? "danger-value" : "")}
+            ${summaryButton("\ubbf8\ud1f4\uadfc", `${yearData.summary.notCheckedOut}\uac74`, "dashboard-year-detail-not-checked-out", yearData.summary.notCheckedOut ? "danger-value" : "")}
+            ${summaryItem("\ucd1d\uc5f0\ucc28", yearData.numbers ? `${yearData.numbers.total}\uc77c` : "-")}
+            ${summaryButton("\uc5f0\ucc28\uc0ac\uc6a9\ud69f\uc218", yearData.numbers ? `${yearData.numbers.used}\uc77c` : "-", "dashboard-year-detail-leave")}
+            ${summaryItem("\uc794\uc5ec\uc5f0\ucc28", yearData.numbers ? `${yearData.numbers.remaining}\uc77c` : "-")}
+          ` : isExecutive()
             ? summaryButton("\ucd9c\ud1f4\uadfc \ub300\uc0c1", `${dayData.targets.length}\uba85`, "dashboard-detail-targets")
             : summaryItem("\uc624\ub298 \ucd9c\uadfc", todayCheckInSummary)}
-          ${isExecutive() ? summaryButton("\uc815\uc0c1\ucd9c\uadfc", `${dayData.normal.length}\uac74`, "dashboard-detail-normal") : ""}
-          ${isExecutive()
+          ${!isDashboardYear && isExecutive() ? summaryButton("\uc815\uc0c1\ucd9c\uadfc", `${dayData.normal.length}\uac74`, "dashboard-detail-normal") : ""}
+          ${!isDashboardYear && isExecutive()
             ? summaryButton("\uc9c0\uac01 / \ubbf8\ud1f4\uadfc", `${dayData.late.length}\uac74 / ${dayData.notCheckedOut.length}\uac74`, "dashboard-detail-issues", dayData.late.length || dayData.notCheckedOut.length ? "danger-value" : "")
-            : summaryItem("\uc624\ub298 \ud1f4\uadfc", todayRecord?.checkOutAt ? esc(formatTime(todayRecord.checkOutAt)) : "-")}
-          ${isExecutive()
+            : !isDashboardYear ? summaryItem("\uc624\ub298 \ud1f4\uadfc", todayRecord?.checkOutAt ? esc(formatTime(todayRecord.checkOutAt)) : "-") : ""}
+          ${!isDashboardYear && isExecutive()
             ? summaryButton("\uc5f0\ucc28\uc815\ubcf4", dashboardLeaveSummary(dayData.leave), "dashboard-detail-leave", dayData.leave.length ? "" : "is-muted")
-            : summaryItem("\ub0a8\uc740 \uc5f0\ucc28", myNumbers ? `${myNumbers.remaining}\uc77c` : "-")}
+            : !isDashboardYear ? summaryItem("\ub0a8\uc740 \uc5f0\ucc28", myNumbers ? `${myNumbers.remaining}\uc77c` : "-") : ""}
           ${isExecutive() ? "" : summaryItem("\ud734\uac00 \ucd1d\uc0ac\uc6a9", myNumbers ? `${myNumbers.used}\uc77c` : "-")}
         </div>
       </section>
+      ${isExecutive() && !isDashboardYear ? `
+        <section class="surface">
+          <h3>${esc(dayData.date)} \uc9c1\uc6d0\ubcc4 \uadfc\ud0dc\uc815\ubcf4</h3>
+          ${attendanceTable(orgRecords, false)}
+        </section>
+      ` : ""}
       ${isExecutive() ? `
         <section class="surface">
           <h3>Today \uc2b9\uc778\uc694\uccad \ud604\ud669</h3>
@@ -588,7 +630,7 @@ function dashboardPage() {
           </div>
         </section>
       ` : ""}
-      <section class="surface">
+      ${isExecutive() ? "" : `<section class="surface">
           <div class="actions" style="justify-content: space-between;">
             <h3>${isExecutive() ? `${esc(state.leaveYear)}\ub144 \uadfc\ud0dc \ud604\ud669` : "\uc624\ub298 \uadfc\ud0dc"}</h3>
             ${isExecutive() ? "" : `<div class="actions"><button type="button" data-action="check-in">\ucd9c\uadfc \uccb4\ud06c</button><button class="secondary" type="button" data-action="check-out">\ud1f4\uadfc \uccb4\ud06c</button></div>`}
@@ -610,7 +652,7 @@ function dashboardPage() {
               </div>
               ${attendanceTable(myRecords.slice(0, 5), false)}
             `}
-      </section>
+      </section>`}
       <section class="surface">
         <div class="actions" style="justify-content: space-between;">
           <h3>${esc(state.leaveYear)}\ub144 \ud734\uac00 \ud604\ud669</h3>
@@ -1350,7 +1392,10 @@ function leaveManagePage() {
 }
 
 function approvalsPage() {
-  const leaveList = state.leaveRequests.filter((item) => item.status === "PENDING_TEAM_LEAD" || item.status === "PENDING_EXECUTIVE");
+  const leaveList = state.leaveRequests.filter((item) => {
+    if (isExecutive()) return item.status === "PENDING_EXECUTIVE";
+    return item.status === "PENDING_TEAM_LEAD" && isTeamLead() && item.user?.teamId === state.me.teamId;
+  });
   const overtimeList = state.overtimeRecords.filter((item) => {
     if (isExecutive()) return item.status === "PENDING_EXECUTIVE";
     return item.status === "PENDING_TEAM_LEAD" && isTeamLead() && item.user?.teamId === state.me.teamId;
@@ -2061,6 +2106,37 @@ function openDashboardDetail(mode) {
   `);
 }
 
+function openDashboardYearDetail(mode) {
+  const data = dashboardYearData();
+  let records = data.records;
+  let title = `${data.year} ${data.user?.name || ""} \uadfc\ud0dc\ud604\ud669`;
+  if (mode === "normal") {
+    records = records.filter((item) => attendanceJudge(item) === "NORMAL");
+    title = `${data.year} \uc815\uc0c1\ucd9c\uadfc`;
+  } else if (mode === "late") {
+    records = records.filter((item) => attendanceJudge(item) === "LATE");
+    title = `${data.year} \uc9c0\uac01`;
+  } else if (mode === "notCheckedOut") {
+    records = records.filter((item) => item.checkInAt && !item.checkOutAt);
+    title = `${data.year} \ubbf8\ud1f4\uadfc`;
+  } else if (mode === "leave") {
+    const leaves = state.leaveRequests.filter((item) => item.userId === data.user?.id && item.status === "APPROVED" && String(item.startDate || "").startsWith(data.year));
+    openModal(`
+      <section class="modal-panel wide-modal">
+        <div class="modal-head"><div><h2>${esc(data.year)} \uc5f0\ucc28\uc0ac\uc6a9\ub0b4\uc5ed</h2></div><button class="secondary" type="button" data-action="close-modal">\ub2eb\uae30</button></div>
+        ${leaveRequestsTable(leaves, false)}
+      </section>
+    `);
+    return;
+  }
+  openModal(`
+    <section class="modal-panel wide-modal">
+      <div class="modal-head"><div><h2>${esc(title)}</h2></div><button class="secondary" type="button" data-action="close-modal">\ub2eb\uae30</button></div>
+      ${attendanceTable(records, false)}
+    </section>
+  `);
+}
+
 function openLeaveBalanceModal(userId) {
   const balance = state.leaveBalances.find((item) => item.userId === userId);
   if (!balance) return;
@@ -2382,11 +2458,12 @@ async function refreshAll() {
   if (!state.me) return;
   const dashboardRangeStart = shiftDate(state.dashboardDate || today(), -7);
   const dashboardRangeEnd = shiftDate(state.dashboardDate || today(), 7);
+  const dashboardYear = String(state.dashboardDate || today()).slice(0, 4);
   const attendanceFrom = state.tab === "dashboard" && isExecutive()
-    ? (state.attendanceFilters.from < dashboardRangeStart ? state.attendanceFilters.from : dashboardRangeStart)
+    ? (state.dashboardMode === "year" ? `${dashboardYear}-01-01` : (state.attendanceFilters.from < dashboardRangeStart ? state.attendanceFilters.from : dashboardRangeStart))
     : state.attendanceFilters.from;
   const attendanceTo = state.tab === "dashboard" && isExecutive()
-    ? (state.attendanceFilters.to > dashboardRangeEnd ? state.attendanceFilters.to : dashboardRangeEnd)
+    ? (state.dashboardMode === "year" ? `${dashboardYear}-12-31` : (state.attendanceFilters.to > dashboardRangeEnd ? state.attendanceFilters.to : dashboardRangeEnd))
     : state.attendanceFilters.to;
   const tasks = [
     api("/api/users"),
@@ -2444,6 +2521,27 @@ document.addEventListener("click", async (event) => {
     if (action === "dashboard-yesterday") {
       state.dashboardDate = shiftDate(today(), -1);
       await refreshAll();
+      return;
+    }
+    if (action === "dashboard-mode") {
+      state.dashboardMode = button.dataset.mode || "day";
+      await refreshAll();
+      return;
+    }
+    if (action === "dashboard-year-detail-normal") {
+      openDashboardYearDetail("normal");
+      return;
+    }
+    if (action === "dashboard-year-detail-late") {
+      openDashboardYearDetail("late");
+      return;
+    }
+    if (action === "dashboard-year-detail-not-checked-out") {
+      openDashboardYearDetail("notCheckedOut");
+      return;
+    }
+    if (action === "dashboard-year-detail-leave") {
+      openDashboardYearDetail("leave");
       return;
     }
     if (action === "dashboard-detail-targets") {
@@ -2719,6 +2817,12 @@ document.addEventListener("change", (event) => {
   if (dashboardDate) {
     state.dashboardDate = dashboardDate.value || today();
     refreshAll();
+    return;
+  }
+  const dashboardUser = event.target.closest("[data-dashboard-user]");
+  if (dashboardUser) {
+    state.dashboardUserId = dashboardUser.value || "";
+    renderApp();
     return;
   }
   const select = event.target.closest("[data-role-select]");
